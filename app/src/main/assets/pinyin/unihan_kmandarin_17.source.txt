@@ -1,0 +1,8 @@
+WorldViewer pinyin base data
+Unicode version: 17.0.0
+Source: https://www.unicode.org/Public/17.0.0/ucd/Unihan.zip
+Source SHA-256: F7A48B2B545ACFAA77B2D607AE28747404CE02BAEFEE16396C5D2D7A8EF34B5E
+Property: kMandarin from Unihan_Readings.txt
+Generated entries: 44348
+Generated SHA-256: 37C62250A9FB5534BB7E3DA0577B220A04C9F4D59B5840B2ABF181CAD7D913D8
+License: Unicode License v3; see ../licenses/unicode_license_v3.txt

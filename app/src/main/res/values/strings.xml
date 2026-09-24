@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">worldviewer</string>
+    <string name="reader_loading">worldviewer %1$s · 독서 fixture 준비 중</string>
+    <string name="reader_ready">%1$s · %2$s · %3$d블록 · UTF-16 %4$d자</string>
+    <string name="open_txt">TXT 파일 열기</string>
+    <string name="open_txt_description">기기에서 중국어 TXT 파일 선택</string>
+    <string name="cancel_import">가져오기 취소</string>
+    <string name="cancel_import_description">진행 중인 TXT 가져오기 취소</string>
+    <string name="reader_importing">%1$s 원본을 보존하는 중</string>
+    <string name="reader_import_progress">%1$s · %2$s %3$s</string>
+    <string name="reader_import_cancelling">가져오기를 취소하는 중</string>
+    <string name="import_phase_copying">원본 복사</string>
+    <string name="import_phase_validating">인코딩 검증</string>
+    <string name="import_progress_percent">%1$d%%</string>
+    <string name="import_progress_bytes">%1$d바이트</string>
+    <string name="reader_import_failed">TXT 열기 실패: %1$s</string>
+    <string name="reader_import_cancelled">가져오기를 취소했습니다. 기존 문서는 그대로 유지됩니다.</string>
+    <string name="reading_progress">%1$.1f%%</string>
+    <string name="reading_progress_control">읽기 위치 이동</string>
+    <string name="reading_progress_description">읽기 진행률 %1$.1f퍼센트</string>
+    <string name="previous_location">이전 위치</string>
+    <string name="previous_location_description">마지막 위치 이동 전으로 돌아가기</string>
+    <string name="encoding_preview_title">%1$s 인코딩과 미리보기 선택</string>
+    <string name="encoding_open">이 인코딩으로 열기</string>
+    <string name="encoding_cancel">취소</string>
+    <string name="imported_txt">가져온 TXT</string>
+    <string name="fixture_name">내장 독서 fixture</string>
+    <string name="unknown_error">알 수 없는 오류</string>
+</resources>
