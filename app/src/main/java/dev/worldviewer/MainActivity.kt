@@ -29,6 +29,8 @@ import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import dev.worldviewer.reader.AutoBookCover
+import dev.worldviewer.reader.AutomaticChapter
+import dev.worldviewer.reader.AutomaticChapterDetector
 import dev.worldviewer.reader.BlockRenderer
 import dev.worldviewer.reader.BookCatalog
 import dev.worldviewer.reader.BookCatalogEntry
@@ -80,6 +82,7 @@ class MainActivity : Activity() {
     private lateinit var statusView: TextView
     private lateinit var bookshelfButton: Button
     private lateinit var styleButton: Button
+    private lateinit var tableOfContentsButton: Button
     private lateinit var openTxtButton: Button
     private lateinit var cancelImportButton: Button
     private lateinit var readingProgressView: TextView
@@ -222,6 +225,12 @@ class MainActivity : Activity() {
             isEnabled = false
             setOnClickListener { showReaderStyle() }
         }
+        tableOfContentsButton = Button(this).apply {
+            text = getString(R.string.table_of_contents)
+            contentDescription = getString(R.string.table_of_contents_description)
+            isEnabled = false
+            setOnClickListener { showAutomaticTableOfContents() }
+        }
         openTxtButton = Button(this).apply {
             text = getString(R.string.open_txt)
             contentDescription = getString(R.string.open_txt_description)
@@ -243,6 +252,10 @@ class MainActivity : Activity() {
         )
         fileControls.addView(
             styleButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        fileControls.addView(
+            tableOfContentsButton,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
         fileControls.addView(
@@ -557,6 +570,7 @@ class MainActivity : Activity() {
                 )
                 bookshelfButton.isEnabled = true
                 styleButton.isEnabled = true
+                tableOfContentsButton.isEnabled = documentLength > 0
                 Log.i(
                     BLOCK_SOURCE_TAG,
                     "source=${if (recent == null) "memory" else "indexed"} " +
@@ -585,6 +599,7 @@ class MainActivity : Activity() {
     private fun showBookshelf() {
         bookshelfButton.isEnabled = false
         styleButton.isEnabled = false
+        tableOfContentsButton.isEnabled = false
         blockExecutor.execute {
             val result = runCatching {
                 bookCatalogStore().load() ?: BookCatalog(currentBookId = null, books = emptyList())
@@ -593,6 +608,7 @@ class MainActivity : Activity() {
                 if (isDestroyed) return@runOnUiThread
                 bookshelfButton.isEnabled = activeImportCancellation == null
                 styleButton.isEnabled = activeImportCancellation == null
+                tableOfContentsButton.isEnabled = activeImportCancellation == null && documentUtf16Length > 0
                 result.onSuccess(::showBookshelfDialog)
                     .onFailure { error -> showLibraryFailure(getString(R.string.bookshelf_load_failed), error) }
             }
@@ -740,6 +756,7 @@ class MainActivity : Activity() {
     private fun beginLibraryOperation(message: String) {
         bookshelfButton.isEnabled = false
         styleButton.isEnabled = false
+        tableOfContentsButton.isEnabled = false
         openTxtButton.isEnabled = false
         statusView.text = message
     }
@@ -748,6 +765,7 @@ class MainActivity : Activity() {
         if (activeImportCancellation != null) return
         bookshelfButton.isEnabled = true
         styleButton.isEnabled = true
+        tableOfContentsButton.isEnabled = documentUtf16Length > 0
         openTxtButton.isEnabled = true
     }
 
@@ -767,16 +785,78 @@ class MainActivity : Activity() {
     private fun showReaderStyle() {
         styleButton.isEnabled = false
         bookshelfButton.isEnabled = false
+        tableOfContentsButton.isEnabled = false
         blockExecutor.execute {
             val result = runCatching { readerStyleStore().load() ?: ReaderStylePreferences() }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 styleButton.isEnabled = activeImportCancellation == null
                 bookshelfButton.isEnabled = activeImportCancellation == null
+                tableOfContentsButton.isEnabled = activeImportCancellation == null && documentUtf16Length > 0
                 result.onSuccess(::showReaderStyleDialog)
                     .onFailure { error -> showStyleFailure(error) }
             }
         }
+    }
+
+    private fun showAutomaticTableOfContents() {
+        tableOfContentsButton.isEnabled = false
+        val documentId = currentDocumentSha256
+        blockExecutor.execute {
+            val result = runCatching {
+                if (documentId == null) {
+                    AutomaticChapterDetector.detect(TextBlocker.split(ReaderFixture.text, MAX_BLOCK_UTF16).asSequence())
+                } else {
+                    val directory = File(cacheDir, TEXT_INDEX_DIRECTORY)
+                    StreamingTextIndex.Reader(
+                        File(directory, "$documentId.index"),
+                        File(directory, "$documentId.blocks"),
+                    ).use { index ->
+                        AutomaticChapterDetector.detect(
+                            (0 until index.blockCount).asSequence().map(index::blockAt),
+                        )
+                    }
+                }
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                tableOfContentsButton.isEnabled = documentUtf16Length > 0
+                result.onSuccess(::showAutomaticTableOfContentsDialog)
+                    .onFailure { error ->
+                        Log.e(CHAPTER_TAG, "automatic table of contents failed", error)
+                        AlertDialog.Builder(this)
+                            .setTitle(R.string.table_of_contents_failed)
+                            .setMessage(error.message ?: getString(R.string.unknown_error))
+                            .setPositiveButton(android.R.string.ok, null)
+                            .show()
+                    }
+            }
+        }
+    }
+
+    private fun showAutomaticTableOfContentsDialog(chapters: List<AutomaticChapter>) {
+        if (chapters.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.table_of_contents)
+                .setMessage(R.string.table_of_contents_empty)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+            return
+        }
+        val labels = chapters.map { chapter ->
+            val progress = ReadingProgress.fromOffset(chapter.utf16Offset, documentUtf16Length) / 10.0
+            getString(R.string.table_of_contents_item, chapter.title, progress)
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.table_of_contents_automatic)
+            .setItems(labels) { _, which ->
+                val chapter = chapters.getOrNull(which) ?: return@setItems
+                val origin = captureReaderAnchor() ?: return@setItems
+                navigateToUtf16(chapter.utf16Offset, origin, reader.paddingTop + 1)
+                Log.i(CHAPTER_TAG, "navigate title=${chapter.title} utf16=${chapter.utf16Offset}")
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun showReaderStyleDialog(preferences: ReaderStylePreferences) {
@@ -1125,6 +1205,7 @@ class MainActivity : Activity() {
         activeImportCancellation = cancellation
         bookshelfButton.isEnabled = false
         styleButton.isEnabled = false
+        tableOfContentsButton.isEnabled = false
         openTxtButton.isEnabled = false
         cancelImportButton.isEnabled = true
         cancelImportButton.visibility = View.VISIBLE
@@ -1136,6 +1217,7 @@ class MainActivity : Activity() {
         activeImportCancellation = null
         bookshelfButton.isEnabled = true
         styleButton.isEnabled = true
+        tableOfContentsButton.isEnabled = documentUtf16Length > 0
         openTxtButton.isEnabled = true
         cancelImportButton.visibility = View.GONE
     }
@@ -1641,6 +1723,7 @@ class MainActivity : Activity() {
         const val IMPORT_TAG = "WorldViewerImport"
         const val CATALOG_TAG = "WorldViewerCatalog"
         const val STYLE_TAG = "WorldViewerStyle"
+        const val CHAPTER_TAG = "WorldViewerChapter"
         const val POSITION_TAG = "WorldViewerPosition"
         const val NAVIGATION_TAG = "WorldViewerNavigation"
         const val BLOCK_SOURCE_TAG = "WorldViewerBlocks"
