@@ -145,4 +145,46 @@ class BookCatalogStoreTest {
         assertTrue(directory.resolve("current-old.partial").exists())
         assertNotNull(directory.resolve(BookCatalogStore.FILE_NAME).takeIf { it.exists() })
     }
+
+    @Test
+    fun `removing a non-current book preserves current and other entries`() {
+        val directory = Files.createTempDirectory("worldviewer-catalog-remove").toFile()
+        val store = BookCatalogStore(directory)
+        store.reconcileCurrent(ImportMetadata("$hashA.original", "첫째.txt", hashA, 10, "UTF-8"), 100)
+        store.reconcileCurrent(ImportMetadata("$hashB.original", "둘째.txt", hashB, 20, "Big5"), 200)
+
+        val updated = store.removeNonCurrent(hashA)
+
+        assertEquals(hashB, updated.currentBookId)
+        assertEquals(listOf(hashB), updated.books.map(BookCatalogEntry::bookId))
+        assertEquals(updated, store.load())
+    }
+
+    @Test
+    fun `current book cannot be removed and catalog remains unchanged`() {
+        val directory = Files.createTempDirectory("worldviewer-catalog-current").toFile()
+        val store = BookCatalogStore(directory)
+        val original = store.reconcileCurrent(
+            ImportMetadata("$hashA.original", "현재.txt", hashA, 10, "UTF-8"),
+            100,
+        )
+
+        assertThrows(TxtImportException::class.java) { store.removeNonCurrent(hashA) }
+
+        assertEquals(original, store.load())
+    }
+
+    @Test
+    fun `unknown book removal leaves catalog unchanged`() {
+        val directory = Files.createTempDirectory("worldviewer-catalog-unknown").toFile()
+        val store = BookCatalogStore(directory)
+        val original = store.reconcileCurrent(
+            ImportMetadata("$hashA.original", "현재.txt", hashA, 10, "UTF-8"),
+            100,
+        )
+
+        assertThrows(TxtImportException::class.java) { store.removeNonCurrent(hashB) }
+
+        assertEquals(original, store.load())
+    }
 }

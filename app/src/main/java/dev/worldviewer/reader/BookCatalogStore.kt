@@ -80,6 +80,20 @@ class BookCatalogStore(private val directory: File) {
         return reconciled
     }
 
+    fun removeNonCurrent(bookId: String): BookCatalog {
+        if (!SHA256.matches(bookId)) throw TxtImportException("책 식별자가 올바르지 않습니다.")
+        val existing = load() ?: throw TxtImportException("책 목록을 찾을 수 없습니다.")
+        if (existing.currentBookId == bookId) {
+            throw TxtImportException("현재 읽는 책은 다른 책을 연 뒤 목록에서 제거할 수 있습니다.")
+        }
+        if (existing.books.none { it.bookId == bookId }) {
+            throw TxtImportException("목록에서 책을 찾을 수 없습니다.")
+        }
+        val updated = existing.copy(books = existing.books.filterNot { it.bookId == bookId })
+        save(updated)
+        return updated
+    }
+
     fun save(catalog: BookCatalog) {
         saveInternal(catalog) { temporary ->
             FileOutputStream(temporary).use { raw ->

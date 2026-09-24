@@ -22,6 +22,8 @@ import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import dev.worldviewer.reader.BlockRenderer
+import dev.worldviewer.reader.BookCatalog
+import dev.worldviewer.reader.BookCatalogEntry
 import dev.worldviewer.reader.BookCatalogStore
 import dev.worldviewer.reader.ImportMetadata
 import dev.worldviewer.reader.ImportMetadataStore
@@ -44,6 +46,7 @@ import dev.worldviewer.reader.TextBlockSource
 import dev.worldviewer.reader.TextBlocker
 import dev.worldviewer.reader.TxtImporter
 import dev.worldviewer.reader.TxtImportCancelledException
+import dev.worldviewer.reader.TxtImportException
 import dev.worldviewer.pinyin.PinyinBlockCoordinator
 import dev.worldviewer.pinyin.UnihanPinyinAdapter
 import dev.worldviewer.pinyin.UnihanPinyinTable
@@ -62,6 +65,7 @@ class MainActivity : Activity() {
     private lateinit var reader: RecyclerView
     private lateinit var readerLayoutManager: LinearLayoutManager
     private lateinit var statusView: TextView
+    private lateinit var bookshelfButton: Button
     private lateinit var openTxtButton: Button
     private lateinit var cancelImportButton: Button
     private lateinit var readingProgressView: TextView
@@ -190,10 +194,16 @@ class MainActivity : Activity() {
         val fileControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
+        bookshelfButton = Button(this).apply {
+            text = getString(R.string.bookshelf)
+            contentDescription = getString(R.string.bookshelf_description)
+            isEnabled = false
+            setOnClickListener { showBookshelf() }
+        }
         openTxtButton = Button(this).apply {
-                text = getString(R.string.open_txt)
-                contentDescription = getString(R.string.open_txt_description)
-                setOnClickListener { openTxtPicker() }
+            text = getString(R.string.open_txt)
+            contentDescription = getString(R.string.open_txt_description)
+            setOnClickListener { openTxtPicker() }
         }
         cancelImportButton = Button(this).apply {
             text = getString(R.string.cancel_import)
@@ -205,6 +215,10 @@ class MainActivity : Activity() {
                 statusView.text = getString(R.string.reader_import_cancelling)
             }
         }
+        fileControls.addView(
+            bookshelfButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
         fileControls.addView(
             openTxtButton,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
@@ -507,6 +521,7 @@ class MainActivity : Activity() {
                     blockSource.blockCount,
                     documentLength,
                 )
+                bookshelfButton.isEnabled = true
                 Log.i(
                     BLOCK_SOURCE_TAG,
                     "source=${if (recent == null) "memory" else "indexed"} " +
@@ -530,6 +545,173 @@ class MainActivity : Activity() {
         }
         @Suppress("DEPRECATION")
         startActivityForResult(picker, REQUEST_OPEN_TXT)
+    }
+
+    private fun showBookshelf() {
+        bookshelfButton.isEnabled = false
+        blockExecutor.execute {
+            val result = runCatching {
+                bookCatalogStore().load() ?: BookCatalog(currentBookId = null, books = emptyList())
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                bookshelfButton.isEnabled = activeImportCancellation == null
+                result.onSuccess(::showBookshelfDialog)
+                    .onFailure { error -> showLibraryFailure(getString(R.string.bookshelf_load_failed), error) }
+            }
+        }
+    }
+
+    private fun showBookshelfDialog(catalog: BookCatalog) {
+        if (catalog.books.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.bookshelf)
+                .setMessage(R.string.bookshelf_empty)
+                .setPositiveButton(R.string.open_txt) { _, _ -> openTxtPicker() }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+            return
+        }
+        val labels = catalog.books.map { book ->
+            val title = if (book.bookId == catalog.currentBookId) {
+                getString(R.string.bookshelf_current, book.displayName)
+            } else {
+                book.displayName
+            }
+            getString(
+                R.string.bookshelf_item,
+                title,
+                book.encoding,
+                book.byteCount,
+            )
+        }.toTypedArray()
+        var selected = catalog.books.indexOfFirst { it.bookId == catalog.currentBookId }.coerceAtLeast(0)
+        var updateActions: () -> Unit = {}
+        lateinit var dialog: AlertDialog
+        dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.bookshelf)
+            .setSingleChoiceItems(labels, selected) { _, which ->
+                selected = which
+                updateActions()
+            }
+            .setPositiveButton(R.string.bookshelf_open, null)
+            .setNeutralButton(R.string.bookshelf_remove, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            val openButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            val removeButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+            updateActions = {
+                val selectedBook = catalog.books.getOrNull(selected)
+                val isCurrent = selectedBook?.bookId == catalog.currentBookId
+                openButton.isEnabled = selectedBook != null && !isCurrent
+                removeButton.isEnabled = selectedBook != null && !isCurrent
+            }
+            openButton.setOnClickListener {
+                val selectedBook = catalog.books.getOrNull(selected) ?: return@setOnClickListener
+                dialog.dismiss()
+                openCatalogBook(selectedBook)
+            }
+            removeButton.setOnClickListener {
+                val selectedBook = catalog.books.getOrNull(selected) ?: return@setOnClickListener
+                dialog.dismiss()
+                confirmCatalogRemoval(selectedBook)
+            }
+            updateActions()
+        }
+        dialog.show()
+    }
+
+    private fun openCatalogBook(book: BookCatalogEntry) {
+        beginLibraryOperation(getString(R.string.bookshelf_opening, book.displayName))
+        persistReadingPosition()
+        blockExecutor.execute {
+            val result = runCatching {
+                val inspected = TxtImporter.inspectStored(
+                    resolveStoredImport(book.storedName),
+                    expectedEncoding = book.encoding,
+                )
+                if (
+                    inspected.sha256 != book.documentSha256 ||
+                    inspected.byteCount != book.byteCount ||
+                    inspected.encoding != book.encoding
+                ) {
+                    throw TxtImportException("보존된 책의 검증값이 목록과 일치하지 않습니다.")
+                }
+                val metadata = ImportMetadata(
+                    storedName = book.storedName,
+                    displayName = book.displayName,
+                    sha256 = book.documentSha256,
+                    byteCount = book.byteCount,
+                    encoding = book.encoding,
+                )
+                metadataStore().save(metadata)
+                bookCatalogStore().reconcileCurrent(metadata, System.currentTimeMillis())
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onSuccess {
+                    Log.i(CATALOG_TAG, "opened book=${book.bookId}")
+                    startActivity(Intent(this, MainActivity::class.java))
+                    finish()
+                }.onFailure { error ->
+                    finishLibraryOperation()
+                    showLibraryFailure(getString(R.string.bookshelf_open_failed), error)
+                }
+            }
+        }
+    }
+
+    private fun confirmCatalogRemoval(book: BookCatalogEntry) {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.bookshelf_remove_title, book.displayName))
+            .setMessage(R.string.bookshelf_remove_message)
+            .setPositiveButton(R.string.bookshelf_remove) { _, _ -> removeCatalogBook(book) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun removeCatalogBook(book: BookCatalogEntry) {
+        beginLibraryOperation(getString(R.string.bookshelf_removing, book.displayName))
+        blockExecutor.execute {
+            val result = runCatching { bookCatalogStore().removeNonCurrent(book.bookId) }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                finishLibraryOperation()
+                result.onSuccess {
+                    statusView.text = getString(R.string.bookshelf_removed, book.displayName)
+                    Log.i(CATALOG_TAG, "removed book=${book.bookId}; original preserved")
+                    showBookshelf()
+                }.onFailure { error ->
+                    showLibraryFailure(getString(R.string.bookshelf_remove_failed), error)
+                }
+            }
+        }
+    }
+
+    private fun beginLibraryOperation(message: String) {
+        bookshelfButton.isEnabled = false
+        openTxtButton.isEnabled = false
+        statusView.text = message
+    }
+
+    private fun finishLibraryOperation() {
+        if (activeImportCancellation != null) return
+        bookshelfButton.isEnabled = true
+        openTxtButton.isEnabled = true
+    }
+
+    private fun showLibraryFailure(title: String, error: Throwable) {
+        statusView.text = getString(
+            R.string.bookshelf_operation_failed,
+            error.message ?: getString(R.string.unknown_error),
+        )
+        Log.e(CATALOG_TAG, title, error)
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(error.message ?: getString(R.string.unknown_error))
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
     }
 
     @Deprecated("Uses the platform file picker without adding an Activity Result dependency.")
@@ -678,6 +860,7 @@ class MainActivity : Activity() {
 
     private fun beginImportOperation(cancellation: ImportCancellation, displayName: String) {
         activeImportCancellation = cancellation
+        bookshelfButton.isEnabled = false
         openTxtButton.isEnabled = false
         cancelImportButton.isEnabled = true
         cancelImportButton.visibility = View.VISIBLE
@@ -687,6 +870,7 @@ class MainActivity : Activity() {
     private fun finishImportOperation(cancellation: ImportCancellation) {
         if (activeImportCancellation !== cancellation) return
         activeImportCancellation = null
+        bookshelfButton.isEnabled = true
         openTxtButton.isEnabled = true
         cancelImportButton.visibility = View.GONE
     }
