@@ -16,11 +16,13 @@ import dev.worldviewer.selection.SelectionRange
 class TextBlockAdapter(
     private val blockSource: TextBlockSource,
     private val renderer: BlockRenderer = BlockRenderer.TEXT_VIEW,
+    private var readerStyle: ReaderStyle = ReaderStyle.DEFAULT,
 ) : RecyclerView.Adapter<TextBlockAdapter.BlockViewHolder>() {
     constructor(
         blocks: List<TextBlock>,
         renderer: BlockRenderer = BlockRenderer.TEXT_VIEW,
-    ) : this(InMemoryTextBlockSource(blocks), renderer)
+        readerStyle: ReaderStyle = ReaderStyle.DEFAULT,
+    ) : this(InMemoryTextBlockSource(blocks), renderer, readerStyle)
 
     private var selection: SelectionRange? = null
     private var completedPinyinSelection: SelectionRange? = null
@@ -39,6 +41,7 @@ class TextBlockAdapter(
         if (renderer == BlockRenderer.STATIC_LAYOUT) {
             return BlockViewHolder(
                 StaticTextBlockView(parent.context).apply {
+                    setReaderStyle(readerStyle)
                     layoutParams = RecyclerView.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -51,11 +54,7 @@ class TextBlockAdapter(
         val top = (18 * density).toInt()
         val bottom = (10 * density).toInt()
         val textView = PinyinTextView(parent.context).apply {
-            setTextColor(Color.rgb(35, 34, 31))
-            textSize = 19f
-            // Keep this space in original mode as well, so ruby can occupy it without changing
-            // line height or collapsing the visual separation around explicit newlines.
-            setLineSpacing(10 * density, 1.15f)
+            applyReaderStyle(readerStyle, density)
             includeFontPadding = true
             breakStrategy = Layout.BREAK_STRATEGY_SIMPLE
             hyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NONE
@@ -69,6 +68,7 @@ class TextBlockAdapter(
     }
 
     override fun onBindViewHolder(holder: BlockViewHolder, position: Int) {
+        holder.applyReaderStyle(readerStyle)
         val block = blockSource.cachedBlock(position)
         if (block == null) {
             holder.bindLoading()
@@ -82,6 +82,7 @@ class TextBlockAdapter(
             pinyinMode,
             pinyinByPosition[position],
             pinyinOverrides,
+            readerStyle,
         )
     }
 
@@ -162,6 +163,12 @@ class TextBlockAdapter(
         notifyItemRangeChanged(0, itemCount, PINYIN_PAYLOAD)
     }
 
+    fun setReaderStyle(style: ReaderStyle) {
+        if (readerStyle == style) return
+        readerStyle = style
+        notifyItemRangeChanged(0, itemCount, STYLE_PAYLOAD)
+    }
+
     fun setCompletedPinyinSelection(range: SelectionRange?) {
         if (completedPinyinSelection == range) return
         completedPinyinSelection = range
@@ -225,6 +232,17 @@ class TextBlockAdapter(
     class BlockViewHolder(
         itemView: View,
     ) : RecyclerView.ViewHolder(itemView) {
+        fun applyReaderStyle(style: ReaderStyle) {
+            when (val view = itemView) {
+                is PinyinTextView -> view.applyReaderStyle(style, view.resources.displayMetrics.density)
+                is TextView -> {
+                    view.setTextColor(style.textColor())
+                    view.textSize = style.fontSizeSp.toFloat()
+                }
+                is StaticTextBlockView -> view.setReaderStyle(style)
+            }
+        }
+
         fun bindLoading() {
             when (val view = itemView) {
                 is PinyinTextView -> {
@@ -243,10 +261,11 @@ class TextBlockAdapter(
             pinyinMode: PinyinDisplayMode,
             readings: List<PinyinReading>?,
             overrides: Map<Int, String>,
+            readerStyle: ReaderStyle,
         ) {
             when (val view = itemView) {
                 is PinyinTextView -> {
-                    view.text = block.displayText(selection)
+                    view.text = block.displayText(selection, readerStyle)
                     view.bindRuby(
                         blockStartUtf16 = block.startUtf16,
                         readings = readings,
@@ -255,19 +274,20 @@ class TextBlockAdapter(
                         overrides = overrides,
                     )
                 }
-                is TextView -> view.text = block.displayText(selection)
+                is TextView -> view.text = block.displayText(selection, readerStyle)
                 is StaticTextBlockView -> view.bind(block)
             }
         }
 
         private fun TextBlock.displayText(
             selection: SelectionRange?,
+            readerStyle: ReaderStyle,
         ): CharSequence = SpannableString(text).apply {
             if (selection != null && selection.endUtf16 > startUtf16 && selection.startUtf16 < endUtf16) {
                 val localStart = (selection.startUtf16 - startUtf16).coerceAtLeast(0)
                 val localEnd = (selection.endUtf16 - startUtf16).coerceAtMost(text.length)
                 setSpan(
-                    BackgroundColorSpan(Color.rgb(255, 224, 130)),
+                    BackgroundColorSpan(readerStyle.selectionColor()),
                     localStart,
                     localEnd,
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
@@ -280,7 +300,25 @@ class TextBlockAdapter(
         const val SELECTION_PAYLOAD = "selection"
         const val PINYIN_PAYLOAD = "pinyin"
         const val BLOCK_PAYLOAD = "block"
+        const val STYLE_PAYLOAD = "style"
     }
+}
+
+private fun TextView.applyReaderStyle(style: ReaderStyle, density: Float) {
+    setTextColor(style.textColor())
+    textSize = style.fontSizeSp.toFloat()
+    // Keep ruby reserve in original mode too, so toggling pinyin does not move source lines.
+    setLineSpacing(10 * density, style.lineSpacingPercent / 100f)
+}
+
+internal fun ReaderStyle.textColor(): Int = when (theme) {
+    ReaderTheme.LIGHT -> Color.rgb(35, 34, 31)
+    ReaderTheme.DARK -> Color.rgb(232, 230, 224)
+}
+
+internal fun ReaderStyle.selectionColor(): Int = when (theme) {
+    ReaderTheme.LIGHT -> Color.rgb(255, 224, 130)
+    ReaderTheme.DARK -> Color.rgb(112, 85, 35)
 }
 
 enum class PinyinDisplayMode {

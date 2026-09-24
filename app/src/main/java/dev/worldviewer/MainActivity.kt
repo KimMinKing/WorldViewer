@@ -2,6 +2,7 @@ package dev.worldviewer
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.res.ColorStateList
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Rect
@@ -10,17 +11,24 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.util.Log
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import dev.worldviewer.reader.AutoBookCover
 import dev.worldviewer.reader.BlockRenderer
 import dev.worldviewer.reader.BookCatalog
 import dev.worldviewer.reader.BookCatalogEntry
@@ -38,6 +46,10 @@ import dev.worldviewer.reader.ReadingPosition
 import dev.worldviewer.reader.ReadingPositionResolver
 import dev.worldviewer.reader.ReadingPositionStore
 import dev.worldviewer.reader.ReadingProgress
+import dev.worldviewer.reader.ReaderStyle
+import dev.worldviewer.reader.ReaderStylePreferences
+import dev.worldviewer.reader.ReaderStyleStore
+import dev.worldviewer.reader.ReaderTheme
 import dev.worldviewer.reader.StagedTextImport
 import dev.worldviewer.reader.StreamingTextIndex
 import dev.worldviewer.reader.TextBlock
@@ -62,10 +74,12 @@ class MainActivity : Activity() {
     private val blockExecutor = Executors.newSingleThreadExecutor()
     private val pinyinExecutor = Executors.newSingleThreadExecutor()
     private val positionExecutor = Executors.newSingleThreadExecutor()
+    private lateinit var rootLayout: LinearLayout
     private lateinit var reader: RecyclerView
     private lateinit var readerLayoutManager: LinearLayoutManager
     private lateinit var statusView: TextView
     private lateinit var bookshelfButton: Button
+    private lateinit var styleButton: Button
     private lateinit var openTxtButton: Button
     private lateinit var cancelImportButton: Button
     private lateinit var readingProgressView: TextView
@@ -80,6 +94,7 @@ class MainActivity : Activity() {
     private var pendingImport: StagedTextImport? = null
     private var activeImportCancellation: ImportCancellation? = null
     private var currentDocumentSha256: String? = null
+    private var currentReaderStyle = ReaderStyle.DEFAULT
     private var documentUtf16Length = 0
     private var trackingReadingProgress = false
     private var navigationInFlight = false
@@ -108,10 +123,11 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         val horizontalPadding = 20.dp
-        val root = LinearLayout(this).apply {
+        rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(250, 248, 243))
         }
+        val root = rootLayout
         statusView = TextView(this).apply {
             setTextColor(Color.rgb(47, 93, 80))
             textSize = 14f
@@ -200,6 +216,12 @@ class MainActivity : Activity() {
             isEnabled = false
             setOnClickListener { showBookshelf() }
         }
+        styleButton = Button(this).apply {
+            text = getString(R.string.reader_style)
+            contentDescription = getString(R.string.reader_style_description)
+            isEnabled = false
+            setOnClickListener { showReaderStyle() }
+        }
         openTxtButton = Button(this).apply {
             text = getString(R.string.open_txt)
             contentDescription = getString(R.string.open_txt_description)
@@ -217,6 +239,10 @@ class MainActivity : Activity() {
         }
         fileControls.addView(
             bookshelfButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        fileControls.addView(
+            styleButton,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
         fileControls.addView(
@@ -330,7 +356,8 @@ class MainActivity : Activity() {
             val removedPartials = TxtImporter.cleanStalePartials(importDirectory()) +
                 metadataStore().cleanStalePartials() +
                 readingPositionStore().cleanStalePartials() +
-                bookCatalogStore().cleanStalePartials()
+                bookCatalogStore().cleanStalePartials() +
+                readerStyleStore().cleanStalePartials()
             if (removedPartials > 0) {
                 Log.i(IMPORT_TAG, "removedStalePartials=$removedPartials")
             }
@@ -412,6 +439,11 @@ class MainActivity : Activity() {
             }
             val recent = recentResult.getOrNull()
             val metadata = recent?.metadata
+            val resolvedStyle = runCatching {
+                (readerStyleStore().load() ?: ReaderStylePreferences()).resolved(metadata?.sha256)
+            }.onFailure { error ->
+                Log.e(STYLE_TAG, "saved reader style ignored", error)
+            }.getOrDefault(ReaderStyle.DEFAULT)
             val sourceText = ReaderFixture.text
             val documentName = metadata?.displayName ?: getString(R.string.fixture_name)
             val blockSource: TextBlockSource = if (recent != null) {
@@ -428,7 +460,9 @@ class MainActivity : Activity() {
                     blockSource.close()
                     return@runOnUiThread
                 }
-                val adapter = TextBlockAdapter(blockSource, renderer)
+                currentReaderStyle = resolvedStyle
+                applyReaderTheme(resolvedStyle)
+                val adapter = TextBlockAdapter(blockSource, renderer, resolvedStyle)
                 currentDocumentSha256 = metadata?.sha256
                 textBlockAdapter = adapter
                 reader.adapter = adapter
@@ -522,6 +556,7 @@ class MainActivity : Activity() {
                     documentLength,
                 )
                 bookshelfButton.isEnabled = true
+                styleButton.isEnabled = true
                 Log.i(
                     BLOCK_SOURCE_TAG,
                     "source=${if (recent == null) "memory" else "indexed"} " +
@@ -549,6 +584,7 @@ class MainActivity : Activity() {
 
     private fun showBookshelf() {
         bookshelfButton.isEnabled = false
+        styleButton.isEnabled = false
         blockExecutor.execute {
             val result = runCatching {
                 bookCatalogStore().load() ?: BookCatalog(currentBookId = null, books = emptyList())
@@ -556,6 +592,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 bookshelfButton.isEnabled = activeImportCancellation == null
+                styleButton.isEnabled = activeImportCancellation == null
                 result.onSuccess(::showBookshelfDialog)
                     .onFailure { error -> showLibraryFailure(getString(R.string.bookshelf_load_failed), error) }
             }
@@ -572,18 +609,29 @@ class MainActivity : Activity() {
                 .show()
             return
         }
-        val labels = catalog.books.map { book ->
+        val labels: Array<CharSequence> = catalog.books.map { book ->
             val title = if (book.bookId == catalog.currentBookId) {
                 getString(R.string.bookshelf_current, book.displayName)
             } else {
                 book.displayName
             }
-            getString(
+            val cover = AutoBookCover.from(book.bookId, book.displayName)
+            val prefix = "■ ${cover.initial}  "
+            SpannableString(
+                prefix + getString(
                 R.string.bookshelf_item,
                 title,
                 book.encoding,
                 book.byteCount,
-            )
+                ),
+            ).apply {
+                setSpan(
+                    ForegroundColorSpan(cover.colorArgb),
+                    0,
+                    prefix.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
         }.toTypedArray()
         var selected = catalog.books.indexOfFirst { it.bookId == catalog.currentBookId }.coerceAtLeast(0)
         var updateActions: () -> Unit = {}
@@ -691,6 +739,7 @@ class MainActivity : Activity() {
 
     private fun beginLibraryOperation(message: String) {
         bookshelfButton.isEnabled = false
+        styleButton.isEnabled = false
         openTxtButton.isEnabled = false
         statusView.text = message
     }
@@ -698,6 +747,7 @@ class MainActivity : Activity() {
     private fun finishLibraryOperation() {
         if (activeImportCancellation != null) return
         bookshelfButton.isEnabled = true
+        styleButton.isEnabled = true
         openTxtButton.isEnabled = true
     }
 
@@ -709,6 +759,219 @@ class MainActivity : Activity() {
         Log.e(CATALOG_TAG, title, error)
         AlertDialog.Builder(this)
             .setTitle(title)
+            .setMessage(error.message ?: getString(R.string.unknown_error))
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    private fun showReaderStyle() {
+        styleButton.isEnabled = false
+        bookshelfButton.isEnabled = false
+        blockExecutor.execute {
+            val result = runCatching { readerStyleStore().load() ?: ReaderStylePreferences() }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                styleButton.isEnabled = activeImportCancellation == null
+                bookshelfButton.isEnabled = activeImportCancellation == null
+                result.onSuccess(::showReaderStyleDialog)
+                    .onFailure { error -> showStyleFailure(error) }
+            }
+        }
+    }
+
+    private fun showReaderStyleDialog(preferences: ReaderStylePreferences) {
+        val bookId = currentDocumentSha256
+        val padding = 24.dp
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, 8.dp, padding, 0)
+        }
+        val scopeGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        val bookScope = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = getString(R.string.reader_style_scope_book)
+            isEnabled = bookId != null
+        }
+        val defaultScope = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = getString(R.string.reader_style_scope_default)
+        }
+        scopeGroup.addView(bookScope, RadioGroup.LayoutParams(0, RadioGroup.LayoutParams.WRAP_CONTENT, 1f))
+        scopeGroup.addView(defaultScope, RadioGroup.LayoutParams(0, RadioGroup.LayoutParams.WRAP_CONTENT, 1f))
+        content.addView(scopeGroup)
+
+        val fontLabel = TextView(this)
+        val fontSize = SeekBar(this).apply { max = STYLE_FONT_MAX - STYLE_FONT_MIN }
+        val spacingLabel = TextView(this)
+        val lineSpacing = SeekBar(this).apply { max = STYLE_LINE_MAX - STYLE_LINE_MIN }
+        content.addView(fontLabel)
+        content.addView(fontSize)
+        content.addView(spacingLabel)
+        content.addView(lineSpacing)
+
+        val themeLabel = TextView(this).apply { text = getString(R.string.reader_style_theme) }
+        val themeGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        val lightTheme = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = getString(R.string.reader_style_light)
+        }
+        val darkTheme = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = getString(R.string.reader_style_dark)
+        }
+        themeGroup.addView(lightTheme, RadioGroup.LayoutParams(0, RadioGroup.LayoutParams.WRAP_CONTENT, 1f))
+        themeGroup.addView(darkTheme, RadioGroup.LayoutParams(0, RadioGroup.LayoutParams.WRAP_CONTENT, 1f))
+        content.addView(themeLabel)
+        content.addView(themeGroup)
+
+        fun updateLabels() {
+            fontLabel.text = getString(R.string.reader_style_font_size, STYLE_FONT_MIN + fontSize.progress)
+            spacingLabel.text = getString(R.string.reader_style_line_spacing, STYLE_LINE_MIN + lineSpacing.progress)
+        }
+        fun putStyle(style: ReaderStyle) {
+            fontSize.progress = style.fontSizeSp.coerceIn(STYLE_FONT_MIN, STYLE_FONT_MAX) - STYLE_FONT_MIN
+            lineSpacing.progress = style.lineSpacingPercent.coerceIn(STYLE_LINE_MIN, STYLE_LINE_MAX) - STYLE_LINE_MIN
+            themeGroup.check(if (style.theme == ReaderTheme.DARK) darkTheme.id else lightTheme.id)
+            updateLabels()
+        }
+        fun selectedStyle(): ReaderStyle = ReaderStyle(
+            fontSizeSp = STYLE_FONT_MIN + fontSize.progress,
+            lineSpacingPercent = STYLE_LINE_MIN + lineSpacing.progress,
+            theme = if (themeGroup.checkedRadioButtonId == darkTheme.id) ReaderTheme.DARK else ReaderTheme.LIGHT,
+        )
+        val sliderListener = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) = updateLabels()
+            override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
+        }
+        fontSize.setOnSeekBarChangeListener(sliderListener)
+        lineSpacing.setOnSeekBarChangeListener(sliderListener)
+        scopeGroup.setOnCheckedChangeListener { _, checkedId ->
+            val style = if (checkedId == defaultScope.id) {
+                preferences.defaultStyle
+            } else {
+                bookId?.let(preferences.bookStyles::get) ?: preferences.defaultStyle
+            }
+            putStyle(style)
+        }
+        if (bookId != null) scopeGroup.check(bookScope.id) else scopeGroup.check(defaultScope.id)
+
+        lateinit var dialog: AlertDialog
+        dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.reader_style)
+            .setView(content)
+            .setPositiveButton(R.string.reader_style_save, null)
+            .setNeutralButton(R.string.reader_style_use_default, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            val clearButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+            clearButton.isEnabled = bookId != null && preferences.bookStyles.containsKey(bookId)
+            saveButton.setOnClickListener {
+                val style = selectedStyle()
+                val saveForBook = scopeGroup.checkedRadioButtonId == bookScope.id && bookId != null
+                saveReaderStyle(dialog) { latest ->
+                    if (saveForBook) {
+                        latest.copy(bookStyles = latest.bookStyles + (requireNotNull(bookId) to style))
+                    } else {
+                        latest.copy(defaultStyle = style)
+                    }
+                }
+            }
+            clearButton.setOnClickListener {
+                val currentBook = bookId ?: return@setOnClickListener
+                saveReaderStyle(dialog) { latest ->
+                    latest.copy(bookStyles = latest.bookStyles - currentBook)
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun saveReaderStyle(
+        dialog: AlertDialog,
+        update: (ReaderStylePreferences) -> ReaderStylePreferences,
+    ) {
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = false
+        blockExecutor.execute {
+            val result = runCatching {
+                val latest = readerStyleStore().load() ?: ReaderStylePreferences()
+                val updated = update(latest)
+                readerStyleStore().save(updated)
+                updated.resolved(currentDocumentSha256)
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onSuccess { style ->
+                    dialog.dismiss()
+                    applyReaderStyle(style)
+                    statusView.text = getString(R.string.reader_style_saved)
+                }.onFailure { error ->
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                    dialog.getButton(AlertDialog.BUTTON_NEUTRAL).isEnabled = currentDocumentSha256 != null
+                    showStyleFailure(error)
+                }
+            }
+        }
+    }
+
+    private fun applyReaderStyle(style: ReaderStyle) {
+        val anchor = captureReaderAnchor()
+        currentReaderStyle = style
+        applyReaderTheme(style)
+        textBlockAdapter?.setReaderStyle(style)
+        restoreReaderAnchor(anchor)
+        if (pinyinMode != PinyinDisplayMode.ORIGINAL) reader.post { requestVisiblePinyin() }
+        Log.i(
+            STYLE_TAG,
+            "applied book=${currentDocumentSha256 ?: "fixture"} font=${style.fontSizeSp} " +
+                "line=${style.lineSpacingPercent} theme=${style.theme}",
+        )
+    }
+
+    private fun applyReaderTheme(style: ReaderStyle) {
+        val dark = style.theme == ReaderTheme.DARK
+        val background = if (dark) Color.rgb(24, 25, 24) else Color.rgb(250, 248, 243)
+        val text = if (dark) Color.rgb(232, 230, 224) else Color.rgb(35, 34, 31)
+        val accent = if (dark) Color.rgb(153, 205, 188) else Color.rgb(47, 93, 80)
+        val button = if (dark) Color.rgb(52, 56, 53) else Color.rgb(230, 226, 217)
+        rootLayout.setBackgroundColor(background)
+        reader.setBackgroundColor(background)
+        statusView.setTextColor(accent)
+        readingProgressView.setTextColor(accent)
+        applyControlTheme(rootLayout, text, button)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            window.insetsController?.setSystemBarsAppearance(if (dark) 0 else mask, mask)
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (dark) {
+                0
+            } else {
+                View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            }
+        }
+    }
+
+    private fun applyControlTheme(group: ViewGroup, textColor: Int, buttonColor: Int) {
+        for (index in 0 until group.childCount) {
+            when (val child = group.getChildAt(index)) {
+                is Button -> {
+                    child.setTextColor(textColor)
+                    child.backgroundTintList = ColorStateList.valueOf(buttonColor)
+                }
+                is ViewGroup -> applyControlTheme(child, textColor, buttonColor)
+            }
+        }
+    }
+
+    private fun showStyleFailure(error: Throwable) {
+        Log.e(STYLE_TAG, "reader style operation failed", error)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.reader_style_failed)
             .setMessage(error.message ?: getString(R.string.unknown_error))
             .setPositiveButton(android.R.string.ok, null)
             .show()
@@ -861,6 +1124,7 @@ class MainActivity : Activity() {
     private fun beginImportOperation(cancellation: ImportCancellation, displayName: String) {
         activeImportCancellation = cancellation
         bookshelfButton.isEnabled = false
+        styleButton.isEnabled = false
         openTxtButton.isEnabled = false
         cancelImportButton.isEnabled = true
         cancelImportButton.visibility = View.VISIBLE
@@ -871,6 +1135,7 @@ class MainActivity : Activity() {
         if (activeImportCancellation !== cancellation) return
         activeImportCancellation = null
         bookshelfButton.isEnabled = true
+        styleButton.isEnabled = true
         openTxtButton.isEnabled = true
         cancelImportButton.visibility = View.GONE
     }
@@ -921,6 +1186,8 @@ class MainActivity : Activity() {
     private fun metadataStore(): ImportMetadataStore = ImportMetadataStore(importDirectory())
 
     private fun bookCatalogStore(): BookCatalogStore = BookCatalogStore(File(filesDir, "library"))
+
+    private fun readerStyleStore(): ReaderStyleStore = ReaderStyleStore(File(filesDir, "reader-styles"))
 
     private fun readingPositionStore(): ReadingPositionStore =
         ReadingPositionStore(File(filesDir, "reading-positions"))
@@ -1373,6 +1640,7 @@ class MainActivity : Activity() {
         const val EXTRA_SELECTION_DELAY = "selection_delay"
         const val IMPORT_TAG = "WorldViewerImport"
         const val CATALOG_TAG = "WorldViewerCatalog"
+        const val STYLE_TAG = "WorldViewerStyle"
         const val POSITION_TAG = "WorldViewerPosition"
         const val NAVIGATION_TAG = "WorldViewerNavigation"
         const val BLOCK_SOURCE_TAG = "WorldViewerBlocks"
@@ -1381,6 +1649,10 @@ class MainActivity : Activity() {
         const val FINAL_ANCHOR_RESTORE_DELAY_MS = 350L
         const val NAVIGATION_SETTLE_DELAY_MS = 450L
         const val NAVIGATION_TIMEOUT_MS = 3_000L
+        const val STYLE_FONT_MIN = 15
+        const val STYLE_FONT_MAX = 30
+        const val STYLE_LINE_MIN = 100
+        const val STYLE_LINE_MAX = 180
         val SELECTION_DELAYS = setOf(250, 350, 450)
         val STORED_NAME = Regex("[0-9a-f]{64}\\.original")
     }

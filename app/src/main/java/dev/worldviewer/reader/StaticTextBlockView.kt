@@ -22,6 +22,7 @@ class StaticTextBlockView(context: Context) : View(context) {
     }
     private var text: String = ""
     private var textLayout: StaticLayout? = null
+    private var readerStyle = ReaderStyle.DEFAULT
 
     init {
         val density = resources.displayMetrics.density
@@ -37,6 +38,20 @@ class StaticTextBlockView(context: Context) : View(context) {
     fun bind(block: TextBlock) {
         text = block.text
         contentDescription = text
+        textLayout = null
+        requestLayout()
+        invalidate()
+    }
+
+    fun setReaderStyle(style: ReaderStyle) {
+        if (readerStyle == style) return
+        readerStyle = style
+        textPaint.color = style.textColor()
+        textPaint.textSize = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP,
+            style.fontSizeSp.toFloat(),
+            resources.displayMetrics,
+        )
         textLayout = null
         requestLayout()
         invalidate()
@@ -60,7 +75,10 @@ class StaticTextBlockView(context: Context) : View(context) {
             .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
             .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
             .setIncludePad(true)
-            .setLineSpacing(6f * resources.displayMetrics.density, 1.15f)
+            .setLineSpacing(
+                10f * resources.displayMetrics.density,
+                readerStyle.lineSpacingPercent / 100f,
+            )
             .build()
         val desiredHeight = paddingTop + requireNotNull(textLayout).height + paddingBottom
         setMeasuredDimension(width, resolveSize(desiredHeight, heightMeasureSpec))
