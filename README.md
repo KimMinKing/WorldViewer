@@ -6,6 +6,7 @@
 - 개발 계획과 단계별 완료 조건: [docs/PLAN.md](docs/PLAN.md)
 - 현재 환경과 검증 상태: [docs/STATUS.md](docs/STATUS.md)
 - 저장소 작업 규칙: [AGENTS.md](AGENTS.md)
+- 앱에 포함되는 제3자 코드·데이터 고지: [app/src/main/assets/licenses/third_party_notices.txt](app/src/main/assets/licenses/third_party_notices.txt)
 
 ## 빌드와 설치
 

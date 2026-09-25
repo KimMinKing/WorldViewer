@@ -1,14 +1,14 @@
 # WorldViewer 현재 상태
 
-마지막 확인: 2026-09-25
+마지막 확인: 2026-09-26
 현재 단계: v1 배포 준비(단계 12) 진행 중; 단계 1·2·4·5·6·7·8·9·10·11 완료, 단계 3 접근성·체감 검증 대기
 
 ## 현재 단계
 
 - 단계: 12 — v1 배포 준비
 - 상태: 진행 중
-- 완료한 작업: 단계 11 종료, 단계 12의 저장 형식 호환성, 에뮬레이터 접근성·저장 실패 처리와 release 유사 benchmark 기준선
-- 현재 작업: 의존성·라이선스·개인정보·영구 앱 ID·서명·최신 스토어 요구 점검
+- 완료한 작업: 단계 11 종료, 단계 12의 저장 형식 호환성, 에뮬레이터 접근성·저장 실패 처리, release 유사 benchmark 기준선과 로컬 배포 요건 점검
+- 현재 작업: 최종 업그레이드·백업 복원·오프라인·APK/AAB 산출물 대조
 - 실제 휴대폰에서는 무선 ADB로 설치·실행했다. USB ADB는 인증 전송 오류로 `offline` 상태가 반복된다.
 
 ## 확인한 사실
@@ -77,6 +77,7 @@ ADB는 PATH에 없어 다음과 같이 SDK 내부 경로로 확인했다.
 - Android Studio 설치 여부가 다른 경로에 있는지와 현재 IntelliJ에서 Android 개발 지원을 쓸 수 있는지.
 - 한국어기초사전 전체 내려받기의 실제 파일 크기와 중국어 소설 표본 역검색 적합도.
 - release 유사 빌드의 장시간 성능, 4GB RAM급 기기와 태블릿 결과.
+- 공개 앱 이름·영구 앱 ID, 배포 경로, 개발자 표시 이름·연락처·공개 개인정보처리방침 URL과 release 서명 키 운용 방식.
 
 ## 실제 기기 실행 경로
 
@@ -93,6 +94,15 @@ ADB는 PATH에 없어 다음과 같이 SDK 내부 경로로 확인했다.
 - 청사진 파일의 실제 경로와 요청 경로가 다르다. 원본 보존을 위해 현재는 루트 파일을 기준 문서로 연결했다.
 
 ## 최근 작업 기록
+
+### 2026-09-26 — 배포 의존성·권한·라이선스와 스토어 진입 조건 점검
+
+- 상태: 검증 대기 — 로컬 산출물 점검 완료, 공개 배포에 필요한 제품 식별·개발자 정보·서명 결정 대기
+- 변경: release 런타임의 Kotlin 2.3.21과 RecyclerView 1.4.0 전이 의존성을 확인해 Apache License 2.0 전문과 패키지별 제3자 고지를 앱 자산에 포함했다. Unicode 17.0 병음 데이터의 기존 Unicode License v3 고지도 연결했다. `allowBackup=false`만으로 일부 제조사의 기기 간 전송이 차단되지 않을 수 있어 Android 11 이하와 12 이상의 백업 규칙에서 앱의 9개 저장 영역을 모두 제외했다. 사용자 데이터 이동은 기존의 사용자가 직접 내보내고 복원하는 `.wvb` 경로로 유지된다.
+- 검증: `releaseRuntimeClasspath`에는 Kotlin·JetBrains annotations·AndroidX·coroutines·Guava listenablefuture만 있고 테스트용 houbb/pinyin은 포함되지 않았다. `rg`와 APK 권한 덤프에서 네트워크·저장소·광고/분석 권한 및 네트워크 구현을 찾지 못했고, 앱 자체 서명 보호 권한만 있었다. `app-release.aab`는 2,279,055바이트, SHA-256 `643f24eab5fd6d7003cc6262a1536952aa6a93a80c632d6e63b3065b91c452c9`이며 Apache·Unicode 라이선스와 제3자 고지가 각각 1개 포함됐다. 네이티브 `.so`는 0개다. release signing config가 비어 있고 `jarsigner`도 번들을 unsigned로 확인했으므로 배포 가능하다고 표시하지 않는다. `.\gradlew.bat assembleDebug bundleRelease test lint`가 성공했고 debug/release/benchmark 각각 146개, 합계 438개 테스트가 실패·오류·건너뜀 없이 통과했다. lint 오류 0건, Gradle 8.14.5 안내 경고 1건이다.
+- 기기 확인: XML·자산·빌드 산출물 점검 작업이라 이번 변경을 실제 기기에 설치하지 않았다. 기준 기기는 Galaxy Z Flip4 `SM-F721N`, Android 16/API 36이며 최신 APK 확인은 대기 중이다.
+- 미해결 문제: 현재 `dev.worldviewer`는 개발용 ID이며 공개 배포용 영구 ID가 아니다. 현 코드 기준으로 데이터는 기기 밖으로 자동 전송되지 않아 Play Data safety의 수집·공유 항목은 없을 것으로 판단하지만, 공개 URL의 개인정보처리방침과 개발자 표시 이름·연락처가 없고 향후 온라인 조회가 추가되면 다시 감사해야 한다. Play 배포를 선택하면 App Bundle·Play App Signing과 별도 upload key를 구성해야 한다. 2026-08-31 이후 신규 앱·업데이트는 target API 36 이상이어야 하며 현재 설정은 36이다. 현재 네이티브 코드가 없어 16KB 페이지 크기 대상 `.so`는 없지만 네이티브 의존성 추가 시 다시 점검한다. 공식 근거: [Play 대상 API 요구](https://support.google.com/googleplay/android-developer/answer/11926878?hl=ko), [앱 서명](https://developer.android.com/studio/publish/app-signing), [Data safety](https://support.google.com/googleplay/android-developer/answer/10787469), [개인정보처리방침 요구](https://support.google.com/googleplay/android-developer/answer/10144311?hl=ko), [자동 백업](https://developer.android.com/identity/data/autobackup), [16KB 페이지](https://developer.android.com/guide/practices/page-sizes).
+- 다음 작업: 영구 제품 식별과 서명 결정에 손대지 않고, 현재 산출물에서 가능한 업그레이드·수동 백업 복원·오프라인 실행과 APK/AAB 내용 대조를 수행한다.
 
 ### 2026-09-25 — release 유사 benchmark 변형과 50MiB 에뮬레이터 기준선
 
