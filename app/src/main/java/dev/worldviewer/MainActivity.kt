@@ -47,6 +47,8 @@ import dev.worldviewer.reader.IndexedTextBlockSource
 import dev.worldviewer.reader.InMemoryTextBlockSource
 import dev.worldviewer.reader.ManualChapter
 import dev.worldviewer.reader.ManualChapterStore
+import dev.worldviewer.reader.MeaningQuery
+import dev.worldviewer.reader.MeaningScope
 import dev.worldviewer.reader.ReaderFixture
 import dev.worldviewer.reader.PinyinDisplayMode
 import dev.worldviewer.reader.ReadingPosition
@@ -70,6 +72,8 @@ import dev.worldviewer.reader.TxtImporter
 import dev.worldviewer.reader.TxtImportCancelledException
 import dev.worldviewer.reader.TxtImportException
 import dev.worldviewer.reader.UserMeaningStore
+import dev.worldviewer.reader.UserMeaning
+import dev.worldviewer.reader.UserMeaningIndex
 import dev.worldviewer.pinyin.PinyinBlockCoordinator
 import dev.worldviewer.pinyin.UnihanPinyinAdapter
 import dev.worldviewer.pinyin.UnihanPinyinTable
@@ -120,6 +124,7 @@ class MainActivity : Activity() {
     private var activeSearchCancellation: TextSearchCancellation? = null
     private var activeSearchDialog: AlertDialog? = null
     private var searchGeneration = 0L
+    private var selectionVersion = 0L
 
     private val pinyinScrollListener = object : RecyclerView.OnScrollListener() {
         override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
@@ -183,6 +188,9 @@ class MainActivity : Activity() {
         }
         selectionButton("끝→", "선택 끝을 한 글자 뒤쪽으로 확장") {
             selectionGestureController?.adjust(SelectionEdge.END, 1)
+        }
+        selectionButton("뜻", "선택한 원문의 저장된 뜻 보기") {
+            showSelectedMeanings()
         }
         selectionButton("발음", "선택한 첫 글자의 임시 병음 수정") {
             editSelectedPinyin()
@@ -311,6 +319,15 @@ class MainActivity : Activity() {
         }
         pinyinControls.addView(
             searchButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        pinyinControls.addView(
+            Button(this).apply {
+                text = getString(R.string.vocabulary_short)
+                textSize = 12f
+                contentDescription = getString(R.string.vocabulary_description)
+                setOnClickListener { showVocabulary() }
+            },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
         root.addView(pinyinControls, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -531,6 +548,7 @@ class MainActivity : Activity() {
                         } ?: StringSelectionTextNavigator(sourceText),
                         confirmationDelayMillis = delay.toLong(),
                         onSelectionChanged = { range ->
+                            selectionVersion++
                             selectionControls.visibility = if (range == null) View.GONE else View.VISIBLE
                         },
                         onSelectionCompleted = { range ->
@@ -1719,6 +1737,257 @@ class MainActivity : Activity() {
         preserveReaderAnchor { adapter.setPinyinReadings(readings) }
     }
 
+    private fun showSelectedMeanings() {
+        val range = selectionGestureController?.completedSelection() ?: return
+        val source = selectedSourceText(range)
+        if (source == null || source.isBlank() || source.length > UserMeaningStore.MAX_SOURCE_UTF16) {
+            Toast.makeText(this, R.string.meaning_selection_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val target = MeaningTarget(
+            sourceText = source,
+            documentSha256 = currentDocumentSha256,
+            startUtf16 = range.startUtf16,
+            endUtf16 = range.endUtf16,
+            selectionVersion = selectionVersion,
+        )
+        blockExecutor.execute {
+            val result = runCatching {
+                val all = userMeaningStore().load()
+                UserMeaningIndex(all).resolve(target.query())
+            }
+            runOnUiThread {
+                if (isDestroyed || target.selectionVersion != selectionVersion) {
+                    Log.i(MEANING_TAG, "stale selection result discarded")
+                    return@runOnUiThread
+                }
+                result.onSuccess { meanings -> showMeaningDialog(target, meanings) }
+                    .onFailure(::showMeaningFailure)
+            }
+        }
+    }
+
+    private fun selectedSourceText(range: SelectionRange): String? {
+        val adapter = textBlockAdapter ?: return null
+        val result = StringBuilder(range.endUtf16 - range.startUtf16)
+        var cursor = range.startUtf16
+        while (cursor < range.endUtf16) {
+            val block = adapter.cachedBlockAt(cursor) ?: return null
+            val localStart = cursor - block.startUtf16
+            val globalEnd = minOf(range.endUtf16, block.endUtf16)
+            result.append(block.text, localStart, globalEnd - block.startUtf16)
+            cursor = globalEnd
+        }
+        return result.toString()
+    }
+
+    private fun showMeaningDialog(target: MeaningTarget, meanings: List<UserMeaning>) {
+        val builder = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.meaning_title, target.sourceText))
+            .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
+            .setNeutralButton(R.string.vocabulary) { _, _ -> showVocabulary() }
+            .setNegativeButton(android.R.string.cancel, null)
+        if (meanings.isEmpty()) {
+            builder.setMessage(R.string.meaning_empty)
+        } else {
+            builder.setItems(meanings.map { value ->
+                getString(R.string.meaning_item, meaningScopeLabel(value.scope), value.meaning)
+            }.toTypedArray()) { _, which ->
+                meanings.getOrNull(which)?.let { editUserMeaning(it, target) }
+            }
+        }
+        builder.show()
+    }
+
+    private fun showAddMeaning(target: MeaningTarget) {
+        val padding = 24.dp
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, 8.dp, padding, 0)
+        }
+        content.addView(TextView(this).apply { text = target.sourceText })
+        val input = EditText(this).apply {
+            hint = getString(R.string.meaning_hint)
+            minLines = 2
+            maxLines = 5
+        }
+        content.addView(input)
+        val scopes = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val rangeScope = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = getString(R.string.meaning_scope_range)
+            isEnabled = target.documentSha256 != null
+        }
+        val bookScope = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = getString(R.string.meaning_scope_book)
+            isEnabled = target.documentSha256 != null
+        }
+        val globalScope = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = getString(R.string.meaning_scope_global)
+        }
+        scopes.addView(rangeScope)
+        scopes.addView(bookScope)
+        scopes.addView(globalScope)
+        scopes.check(if (target.documentSha256 != null) rangeScope.id else globalScope.id)
+        content.addView(scopes)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.meaning_add)
+            .setView(content)
+            .setPositiveButton(R.string.meaning_save) { _, _ ->
+                val scope = when (scopes.checkedRadioButtonId) {
+                    rangeScope.id -> MeaningScope.RANGE
+                    bookScope.id -> MeaningScope.BOOK
+                    else -> MeaningScope.GLOBAL
+                }
+                val now = System.currentTimeMillis()
+                val value = UserMeaning(
+                    id = UUID.randomUUID().toString(),
+                    sourceText = target.sourceText,
+                    meaning = input.text.toString().trim(),
+                    scope = scope,
+                    documentSha256 = if (scope == MeaningScope.GLOBAL) null else target.documentSha256,
+                    rangeStartUtf16 = if (scope == MeaningScope.RANGE) target.startUtf16 else null,
+                    rangeEndUtf16 = if (scope == MeaningScope.RANGE) target.endUtf16 else null,
+                    createdAtEpochMillis = now,
+                    updatedAtEpochMillis = now,
+                )
+                updateUserMeanings({ it + value }) {
+                    if (target.selectionVersion == selectionVersion) showSelectedMeanings()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showVocabulary() {
+        blockExecutor.execute {
+            val result = runCatching { userMeaningStore().load() }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onSuccess(::showVocabularyDialog).onFailure(::showMeaningFailure)
+            }
+        }
+    }
+
+    private fun showVocabularyDialog(values: List<UserMeaning>) {
+        if (values.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.vocabulary)
+                .setMessage(R.string.vocabulary_empty)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+            return
+        }
+        val ordered = values.sortedWith(
+            compareBy<UserMeaning> { it.sourceText }.thenBy { it.scope.ordinal }.thenBy { it.createdAtEpochMillis },
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.vocabulary)
+            .setItems(ordered.map { value ->
+                getString(
+                    R.string.vocabulary_item,
+                    value.sourceText,
+                    meaningScopeLabel(value.scope),
+                    value.meaning,
+                )
+            }.toTypedArray()) { _, which ->
+                ordered.getOrNull(which)?.let { editUserMeaning(it, target = null) }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun editUserMeaning(value: UserMeaning, target: MeaningTarget?) {
+        val input = EditText(this).apply {
+            setText(value.meaning)
+            minLines = 2
+            maxLines = 5
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.meaning_edit_title, value.sourceText, meaningScopeLabel(value.scope)))
+            .setView(input)
+            .setPositiveButton(R.string.meaning_save) { _, _ ->
+                updateUserMeanings({ meanings ->
+                    meanings.map { saved ->
+                        if (saved.id == value.id) {
+                            saved.copy(
+                                meaning = input.text.toString().trim(),
+                                updatedAtEpochMillis = System.currentTimeMillis(),
+                            )
+                        } else {
+                            saved
+                        }
+                    }
+                }) {
+                    if (target != null && target.selectionVersion == selectionVersion) {
+                        showSelectedMeanings()
+                    } else {
+                        showVocabulary()
+                    }
+                }
+            }
+            .setNeutralButton(R.string.meaning_delete) { _, _ -> confirmDeleteMeaning(value, target) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun confirmDeleteMeaning(value: UserMeaning, target: MeaningTarget?) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.meaning_delete)
+            .setMessage(getString(R.string.meaning_delete_message, value.sourceText, value.meaning))
+            .setPositiveButton(R.string.meaning_delete) { _, _ ->
+                updateUserMeanings({ meanings -> meanings.filterNot { it.id == value.id } }) {
+                    if (target != null && target.selectionVersion == selectionVersion) {
+                        showSelectedMeanings()
+                    } else {
+                        showVocabulary()
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun updateUserMeanings(
+        transform: (List<UserMeaning>) -> List<UserMeaning>,
+        onSuccess: () -> Unit,
+    ) {
+        blockExecutor.execute {
+            val result = runCatching {
+                val store = userMeaningStore()
+                val updated = transform(store.load())
+                store.save(updated)
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onSuccess {
+                    Toast.makeText(this, R.string.meaning_saved, Toast.LENGTH_SHORT).show()
+                    onSuccess()
+                }.onFailure(::showMeaningFailure)
+            }
+        }
+    }
+
+    private fun meaningScopeLabel(scope: MeaningScope): String = getString(
+        when (scope) {
+            MeaningScope.RANGE -> R.string.meaning_scope_range
+            MeaningScope.BOOK -> R.string.meaning_scope_book
+            MeaningScope.GLOBAL -> R.string.meaning_scope_global
+        },
+    )
+
+    private fun showMeaningFailure(error: Throwable) {
+        Log.e(MEANING_TAG, "user meaning operation failed", error)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.meaning_failed)
+            .setMessage(error.message ?: getString(R.string.unknown_error))
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
     private fun editSelectedPinyin() {
         val selection = selectionGestureController?.completedSelection() ?: return
         val start = selection.startUtf16
@@ -2127,6 +2396,7 @@ class MainActivity : Activity() {
         const val STYLE_TAG = "WorldViewerStyle"
         const val CHAPTER_TAG = "WorldViewerChapter"
         const val SEARCH_TAG = "WorldViewerSearch"
+        const val MEANING_TAG = "WorldViewerMeaning"
         const val POSITION_TAG = "WorldViewerPosition"
         const val NAVIGATION_TAG = "WorldViewerNavigation"
         const val BLOCK_SOURCE_TAG = "WorldViewerBlocks"
@@ -2161,4 +2431,14 @@ class MainActivity : Activity() {
         val catalog: BookCatalog,
         val progressTenths: Map<String, Int>,
     )
+
+    private data class MeaningTarget(
+        val sourceText: String,
+        val documentSha256: String?,
+        val startUtf16: Int,
+        val endUtf16: Int,
+        val selectionVersion: Long,
+    ) {
+        fun query() = MeaningQuery(sourceText, documentSha256, startUtf16, endUtf16)
+    }
 }
