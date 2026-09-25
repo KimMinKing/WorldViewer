@@ -74,6 +74,7 @@ import dev.worldviewer.reader.TxtImportException
 import dev.worldviewer.reader.UserMeaningStore
 import dev.worldviewer.reader.UserMeaning
 import dev.worldviewer.reader.UserMeaningIndex
+import dev.worldviewer.reader.UserAnnotationStore
 import dev.worldviewer.pinyin.PinyinBlockCoordinator
 import dev.worldviewer.pinyin.UnihanPinyinAdapter
 import dev.worldviewer.pinyin.UnihanPinyinTable
@@ -418,7 +419,8 @@ class MainActivity : Activity() {
                 bookCatalogStore().cleanStalePartials() +
                 readerStyleStore().cleanStalePartials() +
                 manualChapterStore().cleanStalePartials() +
-                userMeaningStore().cleanStalePartials()
+                userMeaningStore().cleanStalePartials() +
+                userAnnotationStore().cleanStalePartials()
             if (removedPartials > 0) {
                 Log.i(IMPORT_TAG, "removedStalePartials=$removedPartials")
             }
@@ -1689,6 +1691,8 @@ class MainActivity : Activity() {
     private fun manualChapterStore(): ManualChapterStore = ManualChapterStore(File(filesDir, "manual-chapters"))
 
     private fun userMeaningStore(): UserMeaningStore = UserMeaningStore(File(filesDir, "user-meanings"))
+
+    private fun userAnnotationStore(): UserAnnotationStore = UserAnnotationStore(File(filesDir, "user-annotations"))
 
     private fun readingPositionStore(): ReadingPositionStore =
         ReadingPositionStore(File(filesDir, "reading-positions"))
