@@ -20,8 +20,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.widget.Button
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ListView
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.SeekBar
@@ -57,10 +59,13 @@ import dev.worldviewer.reader.ReaderStyleStore
 import dev.worldviewer.reader.ReaderTheme
 import dev.worldviewer.reader.StagedTextImport
 import dev.worldviewer.reader.StreamingTextIndex
+import dev.worldviewer.reader.StreamingTextSearch
 import dev.worldviewer.reader.TextBlock
 import dev.worldviewer.reader.TextBlockAdapter
 import dev.worldviewer.reader.TextBlockSource
 import dev.worldviewer.reader.TextBlocker
+import dev.worldviewer.reader.TextSearchCancellation
+import dev.worldviewer.reader.TextSearchResult
 import dev.worldviewer.reader.TxtImporter
 import dev.worldviewer.reader.TxtImportCancelledException
 import dev.worldviewer.reader.TxtImportException
@@ -75,6 +80,8 @@ import dev.worldviewer.selection.StringSelectionTextNavigator
 import java.util.concurrent.Executors
 import java.util.UUID
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 
 class MainActivity : Activity() {
     private val blockExecutor = Executors.newSingleThreadExecutor()
@@ -87,6 +94,7 @@ class MainActivity : Activity() {
     private lateinit var bookshelfButton: Button
     private lateinit var styleButton: Button
     private lateinit var tableOfContentsButton: Button
+    private lateinit var searchButton: Button
     private lateinit var openTxtButton: Button
     private lateinit var cancelImportButton: Button
     private lateinit var readingProgressView: TextView
@@ -108,6 +116,9 @@ class MainActivity : Activity() {
     private var navigationGeneration = 0L
     private var pendingNavigationOrigin: ReaderAnchor? = null
     private var previousNavigationAnchor: ReaderAnchor? = null
+    private var activeSearchCancellation: TextSearchCancellation? = null
+    private var activeSearchDialog: AlertDialog? = null
+    private var searchGeneration = 0L
 
     private val pinyinScrollListener = object : RecyclerView.OnScrollListener() {
         override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
@@ -288,6 +299,19 @@ class MainActivity : Activity() {
         pinyinButton("원문", "병음 숨기기", PinyinDisplayMode.ORIGINAL)
         pinyinButton("전체 병음", "화면의 모든 한자 병음 보기", PinyinDisplayMode.ALL)
         pinyinButton("선택 병음", "선택한 한자의 병음만 보기", PinyinDisplayMode.SELECTION)
+        searchButton = Button(this).apply {
+            text = getString(R.string.search)
+            textSize = 12f
+            contentDescription = getString(R.string.search_description)
+            isEnabled = false
+            setOnClickListener {
+                if (activeSearchCancellation != null) cancelActiveSearch() else showSearchInput()
+            }
+        }
+        pinyinControls.addView(
+            searchButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
         root.addView(pinyinControls, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         val navigationControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -576,6 +600,7 @@ class MainActivity : Activity() {
                 bookshelfButton.isEnabled = true
                 styleButton.isEnabled = true
                 tableOfContentsButton.isEnabled = documentLength > 0
+                searchButton.isEnabled = documentLength > 0
                 Log.i(
                     BLOCK_SOURCE_TAG,
                     "source=${if (recent == null) "memory" else "indexed"} " +
@@ -607,7 +632,22 @@ class MainActivity : Activity() {
         tableOfContentsButton.isEnabled = false
         blockExecutor.execute {
             val result = runCatching {
-                bookCatalogStore().load() ?: BookCatalog(currentBookId = null, books = emptyList())
+                val catalog = bookCatalogStore().load() ?: BookCatalog(currentBookId = null, books = emptyList())
+                val progress = catalog.books.mapNotNull { book ->
+                    runCatching {
+                        val position = readingPositionStore().load(book.documentSha256) ?: return@runCatching null
+                        val indexDirectory = File(cacheDir, TEXT_INDEX_DIRECTORY)
+                        StreamingTextIndex.Reader(
+                            File(indexDirectory, "${book.documentSha256}.index"),
+                            File(indexDirectory, "${book.documentSha256}.blocks"),
+                        ).use { index ->
+                            book.bookId to ReadingProgress.fromOffset(position.utf16Offset, index.utf16Length)
+                        }
+                    }.onFailure { error ->
+                        Log.w(CATALOG_TAG, "recent progress unavailable book=${book.bookId}", error)
+                    }.getOrNull()
+                }.toMap()
+                BookshelfSnapshot(catalog, progress)
             }
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
@@ -620,7 +660,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showBookshelfDialog(catalog: BookCatalog) {
+    private fun showBookshelfDialog(snapshot: BookshelfSnapshot) {
+        val catalog = snapshot.catalog
         if (catalog.books.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle(R.string.bookshelf)
@@ -640,10 +681,16 @@ class MainActivity : Activity() {
             val prefix = "■ ${cover.initial}  "
             SpannableString(
                 prefix + getString(
-                R.string.bookshelf_item,
-                title,
-                book.encoding,
-                book.byteCount,
+                    R.string.bookshelf_item,
+                    title,
+                    book.encoding,
+                    book.byteCount,
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(
+                        Date(book.lastOpenedAtEpochMillis),
+                    ),
+                    snapshot.progressTenths[book.bookId]?.let { progress ->
+                        getString(R.string.bookshelf_progress_suffix, progress / 10.0)
+                    }.orEmpty(),
                 ),
             ).apply {
                 setSpan(
@@ -759,9 +806,11 @@ class MainActivity : Activity() {
     }
 
     private fun beginLibraryOperation(message: String) {
+        cancelActiveSearch()
         bookshelfButton.isEnabled = false
         styleButton.isEnabled = false
         tableOfContentsButton.isEnabled = false
+        searchButton.isEnabled = false
         openTxtButton.isEnabled = false
         statusView.text = message
     }
@@ -771,6 +820,7 @@ class MainActivity : Activity() {
         bookshelfButton.isEnabled = true
         styleButton.isEnabled = true
         tableOfContentsButton.isEnabled = documentUtf16Length > 0
+        searchButton.isEnabled = documentUtf16Length > 0
         openTxtButton.isEnabled = true
     }
 
@@ -860,6 +910,158 @@ class MainActivity : Activity() {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    private fun showSearchInput() {
+        if (documentUtf16Length <= 0) return
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            hint = getString(R.string.search_hint)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.search_title)
+            .setView(input)
+            .setPositiveButton(R.string.search_start) { _, _ ->
+                val query = input.text.toString().trim()
+                if (query.isBlank() || query.length > StreamingTextSearch.MAX_QUERY_UTF16) {
+                    Toast.makeText(this, R.string.search_invalid_query, Toast.LENGTH_SHORT).show()
+                } else {
+                    startStreamingSearch(query)
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun startStreamingSearch(query: String) {
+        cancelActiveSearch()
+        val cancellation = TextSearchCancellation()
+        val generation = ++searchGeneration
+        val documentId = currentDocumentSha256
+        val results = ArrayList<TextSearchResult>()
+        val labels = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1)
+        val status = TextView(this).apply {
+            setPadding(24.dp, 12.dp, 24.dp, 12.dp)
+            text = getString(R.string.search_progress, 0, 0)
+        }
+        val list = ListView(this).apply { adapter = labels }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(status, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            addView(list, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 360.dp))
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.search_results_title, query))
+            .setView(content)
+            .setNegativeButton(R.string.search_cancel, null)
+            .create()
+        activeSearchCancellation = cancellation
+        activeSearchDialog = dialog
+        searchButton.text = getString(R.string.search_cancel)
+        searchButton.contentDescription = getString(R.string.search_cancel_description)
+        list.setOnItemClickListener { _, _, position, _ ->
+            val result = results.getOrNull(position) ?: return@setOnItemClickListener
+            val origin = captureReaderAnchor() ?: return@setOnItemClickListener
+            cancelActiveSearch()
+            navigateToUtf16(result.utf16Offset, origin, reader.paddingTop + 1)
+            Log.i(SEARCH_TAG, "navigate queryLength=${query.length} utf16=${result.utf16Offset}")
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener { cancelActiveSearch() }
+        }
+        dialog.setOnCancelListener { cancelActiveSearch() }
+        dialog.setOnDismissListener {
+            if (activeSearchDialog === dialog) cancelActiveSearch()
+        }
+        dialog.show()
+
+        blockExecutor.execute {
+            val searchResult = runCatching {
+                fun search(blocks: Sequence<TextBlock>) = StreamingTextSearch.search(
+                    blocks = blocks,
+                    query = query,
+                    cancellation = cancellation,
+                    onProgress = { progress ->
+                        runOnUiThread {
+                            if (
+                                isDestroyed || generation != searchGeneration ||
+                                activeSearchDialog !== dialog || currentDocumentSha256 != documentId
+                            ) return@runOnUiThread
+                            progress.matches.forEach { match ->
+                                results += match
+                                val percent = ReadingProgress.fromOffset(
+                                    match.utf16Offset,
+                                    documentUtf16Length,
+                                ) / 10.0
+                                labels.add(getString(R.string.search_result_item, percent, match.preview))
+                            }
+                            status.text = getString(R.string.search_progress, progress.scannedBlocks, results.size)
+                        }
+                    },
+                )
+                if (documentId == null) {
+                    search(TextBlocker.split(ReaderFixture.text, MAX_BLOCK_UTF16).asSequence())
+                } else {
+                    val directory = File(cacheDir, TEXT_INDEX_DIRECTORY)
+                    StreamingTextIndex.Reader(
+                        File(directory, "$documentId.index"),
+                        File(directory, "$documentId.blocks"),
+                    ).use { index ->
+                        search((0 until index.blockCount).asSequence().map(index::blockAt))
+                    }
+                }
+            }
+            runOnUiThread {
+                if (
+                    isDestroyed || generation != searchGeneration ||
+                    activeSearchDialog !== dialog || currentDocumentSha256 != documentId
+                ) return@runOnUiThread
+                searchResult.onSuccess { summary ->
+                    if (activeSearchCancellation === cancellation) activeSearchCancellation = null
+                    searchButton.text = getString(R.string.search)
+                    searchButton.contentDescription = getString(R.string.search_description)
+                    status.text = when {
+                        summary.cancelled -> getString(R.string.search_cancelled, results.size)
+                        summary.truncated -> getString(R.string.search_truncated, results.size)
+                        results.isEmpty() -> getString(R.string.search_empty)
+                        else -> getString(R.string.search_complete, results.size)
+                    }
+                    dialog.getButton(AlertDialog.BUTTON_NEGATIVE).text = getString(android.R.string.ok)
+                    Log.i(
+                        SEARCH_TAG,
+                        "complete queryLength=${query.length} results=${summary.resultCount} " +
+                            "blocks=${summary.scannedBlocks} cancelled=${summary.cancelled} " +
+                            "truncated=${summary.truncated}",
+                    )
+                }.onFailure { error ->
+                    if (activeSearchCancellation === cancellation) activeSearchCancellation = null
+                    searchButton.text = getString(R.string.search)
+                    searchButton.contentDescription = getString(R.string.search_description)
+                    status.text = getString(
+                        R.string.search_failed,
+                        error.message ?: getString(R.string.unknown_error),
+                    )
+                    Log.e(SEARCH_TAG, "search failed", error)
+                }
+            }
+        }
+    }
+
+    private fun cancelActiveSearch() {
+        val cancellation = activeSearchCancellation
+        val dialog = activeSearchDialog
+        if (cancellation == null && dialog == null) return
+        searchGeneration++
+        activeSearchCancellation = null
+        activeSearchDialog = null
+        cancellation?.cancel()
+        if (dialog?.isShowing == true) dialog.dismiss()
+        if (::searchButton.isInitialized) {
+            searchButton.text = getString(R.string.search)
+            searchButton.contentDescription = getString(R.string.search_description)
+            searchButton.isEnabled = documentUtf16Length > 0 && activeImportCancellation == null
+        }
+        Log.i(SEARCH_TAG, "cancelled")
     }
 
     private fun addManualChapterHere() {
@@ -1392,10 +1594,12 @@ class MainActivity : Activity() {
     }
 
     private fun beginImportOperation(cancellation: ImportCancellation, displayName: String) {
+        cancelActiveSearch()
         activeImportCancellation = cancellation
         bookshelfButton.isEnabled = false
         styleButton.isEnabled = false
         tableOfContentsButton.isEnabled = false
+        searchButton.isEnabled = false
         openTxtButton.isEnabled = false
         cancelImportButton.isEnabled = true
         cancelImportButton.visibility = View.VISIBLE
@@ -1408,6 +1612,7 @@ class MainActivity : Activity() {
         bookshelfButton.isEnabled = true
         styleButton.isEnabled = true
         tableOfContentsButton.isEnabled = documentUtf16Length > 0
+        searchButton.isEnabled = documentUtf16Length > 0
         openTxtButton.isEnabled = true
         cancelImportButton.visibility = View.GONE
     }
@@ -1840,6 +2045,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        cancelActiveSearch()
         activeImportCancellation?.cancel()
         activeImportCancellation = null
         pendingImport?.close()
@@ -1916,6 +2122,7 @@ class MainActivity : Activity() {
         const val CATALOG_TAG = "WorldViewerCatalog"
         const val STYLE_TAG = "WorldViewerStyle"
         const val CHAPTER_TAG = "WorldViewerChapter"
+        const val SEARCH_TAG = "WorldViewerSearch"
         const val POSITION_TAG = "WorldViewerPosition"
         const val NAVIGATION_TAG = "WorldViewerNavigation"
         const val BLOCK_SOURCE_TAG = "WorldViewerBlocks"
@@ -1944,5 +2151,10 @@ class MainActivity : Activity() {
         val initialBlocks: Map<Int, TextBlock>,
         val utf16Length: Int,
         val savedPosition: ReadingPosition?,
+    )
+
+    private data class BookshelfSnapshot(
+        val catalog: BookCatalog,
+        val progressTenths: Map<String, Int>,
     )
 }
