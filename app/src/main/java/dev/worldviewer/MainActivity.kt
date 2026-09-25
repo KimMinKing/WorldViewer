@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.os.storage.StorageManager
 import android.provider.OpenableColumns
 import android.text.SpannableString
 import android.text.Spanned
@@ -164,7 +165,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (WorldViewerRestore(filesDir).recoverInterruptedRestore()) {
+        if (WorldViewerRestore(filesDir, ::availableStorageBytes).recoverInterruptedRestore()) {
             Log.w(RESTORE_TAG, "Recovered an interrupted backup restore before loading reader data")
         }
 
@@ -718,7 +719,7 @@ class MainActivity : Activity() {
 
     private fun openBackupDestination(includeOriginals: Boolean) {
         pendingBackupIncludesOriginals = includeOriginals
-        val timestamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+        val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val picker = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/vnd.worldviewer.backup"
@@ -747,14 +748,24 @@ class MainActivity : Activity() {
                 position?.let { current ->
                     positionExecutor.submit { readingPositionStore().save(current) }.get()
                 }
-                val preview = WorldViewerBackup(filesDir).create(
+                val preview = WorldViewerBackup(filesDir, ::availableStorageBytes).create(
                     destination = requireNotNull(temporary),
                     includeOriginalTexts = includeOriginals,
                 )
-                val output = contentResolver.openOutputStream(uri, "wt")
-                    ?: throw BackupFormatException("선택한 위치에 백업을 쓸 수 없습니다.")
-                output.buffered().use { destination ->
-                    requireNotNull(temporary).inputStream().buffered().use { source -> source.copyTo(destination) }
+                try {
+                    val output = contentResolver.openOutputStream(uri, "wt")
+                        ?: throw BackupFormatException("선택한 위치에 백업을 쓸 수 없습니다.")
+                    output.buffered().use { destination ->
+                        requireNotNull(temporary).inputStream().buffered().use { source ->
+                            source.copyTo(destination)
+                        }
+                    }
+                } catch (error: Exception) {
+                    if (error is BackupFormatException) throw error
+                    throw BackupFormatException(
+                        "선택한 위치에 백업을 저장하지 못했습니다. 저장 공간과 쓰기 권한을 확인하세요.",
+                        error,
+                    )
                 }
                 preview
             }
@@ -786,7 +797,7 @@ class MainActivity : Activity() {
             val result = runCatching {
                 temporary = File.createTempFile("worldviewer-restore-", ".wvb", cacheDir)
                 copyRestoreSource(uri, requireNotNull(temporary))
-                WorldViewerRestore(filesDir).preview(requireNotNull(temporary))
+                WorldViewerRestore(filesDir, ::availableStorageBytes).preview(requireNotNull(temporary))
             }
             runOnUiThread {
                 if (isDestroyed) {
@@ -808,22 +819,36 @@ class MainActivity : Activity() {
         if (declaredSize != null && declaredSize > MAX_BACKUP_ARCHIVE_BYTES) {
             throw BackupFormatException("백업 파일이 허용 크기를 넘습니다.")
         }
-        val input = contentResolver.openInputStream(uri)
-            ?: throw BackupFormatException("선택한 백업 파일을 읽을 수 없습니다.")
-        input.buffered().use { source ->
-            destination.outputStream().buffered().use { output ->
-                val buffer = ByteArray(BACKUP_COPY_BUFFER_SIZE)
-                var copied = 0L
-                while (true) {
-                    val read = source.read(buffer)
-                    if (read < 0) break
-                    copied += read
-                    if (copied > MAX_BACKUP_ARCHIVE_BYTES) {
-                        throw BackupFormatException("백업 파일이 허용 크기를 넘습니다.")
+        if (
+            declaredSize != null &&
+            availableStorageBytes(cacheDir) < declaredSize + TEMPORARY_SPACE_MARGIN_BYTES
+        ) {
+            throw BackupFormatException("백업을 검사할 임시 공간이 부족합니다. 기기 저장 공간을 확보하세요.")
+        }
+        try {
+            val input = contentResolver.openInputStream(uri)
+                ?: throw BackupFormatException("선택한 백업 파일을 읽을 수 없습니다.")
+            input.buffered().use { source ->
+                destination.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(BACKUP_COPY_BUFFER_SIZE)
+                    var copied = 0L
+                    while (true) {
+                        val read = source.read(buffer)
+                        if (read < 0) break
+                        copied += read
+                        if (copied > MAX_BACKUP_ARCHIVE_BYTES) {
+                            throw BackupFormatException("백업 파일이 허용 크기를 넘습니다.")
+                        }
+                        output.write(buffer, 0, read)
                     }
-                    output.write(buffer, 0, read)
                 }
             }
+        } catch (error: Exception) {
+            if (error is BackupFormatException) throw error
+            throw BackupFormatException(
+                "백업 파일을 임시 공간에 복사하지 못했습니다. 저장 공간과 읽기 권한을 확인하세요.",
+                error,
+            )
         }
     }
 
@@ -882,7 +907,7 @@ class MainActivity : Activity() {
         backupExecutor.execute {
             val result = runCatching {
                 positionExecutor.submit { }.get()
-                WorldViewerRestore(filesDir).restore(file, policy, preview)
+                WorldViewerRestore(filesDir, ::availableStorageBytes).restore(file, policy, preview)
             }
             file.delete()
             runOnUiThread {
@@ -935,6 +960,12 @@ class MainActivity : Activity() {
             .setPositiveButton(android.R.string.ok, null)
             .show()
     }
+
+    @Suppress("UsableSpace")
+    private fun availableStorageBytes(path: File): Long = runCatching {
+        val storage = getSystemService(StorageManager::class.java)
+        storage.getAllocatableBytes(storage.getUuidForPath(path))
+    }.getOrElse { path.usableSpace }
 
     private fun showBookshelf() {
         bookshelfButton.isEnabled = false
@@ -2987,6 +3018,7 @@ class MainActivity : Activity() {
         const val TEXT_INDEX_DIRECTORY = "text-index"
         const val BACKUP_COPY_BUFFER_SIZE = 64 * 1024
         const val MAX_BACKUP_ARCHIVE_BYTES = 21L * 1024 * 1024 * 1024
+        const val TEMPORARY_SPACE_MARGIN_BYTES = 8L * 1024 * 1024
         const val SELECTION_BUTTONS_PER_ROW = 4
         const val DEFAULT_SELECTION_DELAY = 350
         const val FINAL_ANCHOR_RESTORE_DELAY_MS = 350L

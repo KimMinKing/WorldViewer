@@ -134,6 +134,26 @@ class WorldViewerBackupTest {
     }
 
     @Test
+    fun `insufficient temporary space preserves the previous backup`() {
+        val files = fixtureFiles()
+        val destination = temporary.newFile("space-existing.wvb")
+        val previous = "previous-backup".toByteArray()
+        destination.writeBytes(previous)
+
+        val error = assertThrows(BackupFormatException::class.java) {
+            WorldViewerBackup(files, availableBytes = { 0L }).create(
+                destination,
+                includeOriginalTexts = true,
+                createdAtEpochMillis = 7,
+            )
+        }
+
+        assertTrue(error.message.orEmpty().contains("공간"))
+        assertArrayEquals(previous, destination.readBytes())
+        assertTrue(requireNotNull(destination.parentFile).listFiles().orEmpty().none { it.name.endsWith(".partial") })
+    }
+
+    @Test
     fun `backup destination cannot overwrite app user data`() {
         val files = fixtureFiles()
         val destination = java.io.File(files, "user-meanings/user-meanings.dat")

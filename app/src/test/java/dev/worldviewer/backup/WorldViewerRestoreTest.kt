@@ -78,6 +78,26 @@ class WorldViewerRestoreTest {
     }
 
     @Test
+    fun `insufficient temporary space changes no current data`() {
+        val source = dataRoot("source-space", meaning = "백업")
+        val backupFile = temporary.newFile("space.wvb")
+        WorldViewerBackup(source).create(backupFile, includeOriginalTexts = false, createdAtEpochMillis = 10)
+        val target = dataRoot("target-space", meaning = "현재")
+        val before = snapshot(target)
+        val restore = WorldViewerRestore(target, availableBytes = { 0L })
+
+        val error = assertThrows(BackupFormatException::class.java) {
+            restore.restore(backupFile, RestoreConflictPolicy.REPLACE_EXISTING)
+        }
+
+        assertTrue(error.message.orEmpty().contains("공간"))
+        assertSnapshot(before, target)
+        assertTrue(requireNotNull(target.parentFile).listFiles().orEmpty().none {
+            it.name.startsWith("worldviewer-restore-working-") || it.name == "worldviewer-restore-transaction"
+        })
+    }
+
+    @Test
     fun `data changed after preview requires another confirmation`() {
         val source = dataRoot("source-stale-preview", meaning = "백업")
         val backupFile = temporary.newFile("stale-preview.wvb")

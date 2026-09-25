@@ -44,9 +44,15 @@ data class RestoreResult(
     val skippedPaths: List<String>,
 )
 
+@Suppress("UsableSpace")
+private fun defaultAvailableBytes(file: File): Long = file.usableSpace
+
 /** Restores verified backup entries with a durable rollback journal. */
-class WorldViewerRestore(private val filesDirectory: File) {
-    private val backupReader = WorldViewerBackup(filesDirectory)
+class WorldViewerRestore(
+    private val filesDirectory: File,
+    private val availableBytes: (File) -> Long = ::defaultAvailableBytes,
+) {
+    private val backupReader = WorldViewerBackup(filesDirectory, availableBytes)
 
     fun preview(backupFile: File): RestorePreview = synchronized(RESTORE_LOCK) {
         recoverInterruptedLocked()
@@ -96,12 +102,13 @@ class WorldViewerRestore(private val filesDirectory: File) {
         if (appliedPaths.isEmpty()) return@synchronized RestoreResult(initialPreview, emptyList(), skippedPaths)
 
         val parent = workspaceParent()
+        ensureTemporarySpace(parent, initialPreview.backup, appliedPaths.toSet())
         val working = Files.createTempDirectory(parent.toPath(), WORKING_PREFIX).toFile()
         var published = false
         try {
             val staging = File(working, STAGING_DIRECTORY).also(::createDirectory)
             File(working, ROLLBACK_DIRECTORY).also(::createDirectory)
-            extractVerified(backupFile, initialPreview.backup, staging)
+            extractVerified(backupFile, initialPreview.backup, staging, appliedPaths.toSet())
             validateStaged(staging, initialPreview.backup, appliedPaths.toSet())
             if (compareWithExisting(initialPreview.backup) != initialPreview) {
                 throw BackupFormatException("미리보기 이후 기존 데이터가 변경되어 복원을 중단했습니다.")
@@ -229,10 +236,15 @@ class WorldViewerRestore(private val filesDirectory: File) {
         return RestorePreview(backup, newPaths.sorted(), unchanged.sorted(), conflicts.sortedBy { it.relativePath })
     }
 
-    private fun extractVerified(backupFile: File, preview: BackupPreview, staging: File) {
+    private fun extractVerified(
+        backupFile: File,
+        preview: BackupPreview,
+        staging: File,
+        appliedPaths: Set<String>,
+    ) {
         try {
             ZipFile(backupFile).use { zip ->
-                preview.entries.forEach { metadata ->
+                preview.entries.filter { it.relativePath in appliedPaths }.forEach { metadata ->
                     val entry = zip.getEntry("data/${metadata.relativePath}")
                         ?: throw BackupFormatException("복원할 백업 항목이 없습니다: ${metadata.relativePath}")
                     val target = checkedChild(staging, metadata.relativePath)
@@ -394,6 +406,17 @@ class WorldViewerRestore(private val filesDirectory: File) {
         if (!directory.isDirectory) throw BackupFormatException("복원 작업 경로가 폴더가 아닙니다: ${directory.name}")
     }
 
+    private fun ensureTemporarySpace(parent: File, preview: BackupPreview, appliedPaths: Set<String>) {
+        val contentBytes = preview.entries
+            .asSequence()
+            .filter { it.relativePath in appliedPaths }
+            .sumOf(BackupEntry::sizeBytes)
+        val required = Math.addExact(contentBytes, TEMPORARY_SPACE_MARGIN_BYTES)
+        if (availableBytes(parent) < required) {
+            throw BackupFormatException("복원 준비 공간이 부족합니다. 기기 저장 공간을 확보한 뒤 다시 시도하세요.")
+        }
+    }
+
     private fun checkedTarget(relativePath: String): File {
         val root = filesDirectory.canonicalFile
         val target = File(root, relativePath).canonicalFile
@@ -452,5 +475,6 @@ class WorldViewerRestore(private val filesDirectory: File) {
         const val ROLLBACK_DIRECTORY = "rollback"
         const val JOURNAL_FILE = "journal.dat"
         const val COMMITTED_FILE = "committed"
+        const val TEMPORARY_SPACE_MARGIN_BYTES = 8L * 1024 * 1024
     }
 }

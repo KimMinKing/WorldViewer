@@ -46,8 +46,14 @@ data class BackupPreview(
 
 class BackupFormatException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
+@Suppress("UsableSpace")
+private fun defaultAvailableBytes(file: File): Long = file.usableSpace
+
 /** Creates and verifies a versioned ZIP without including regenerable cache files. */
-class WorldViewerBackup(private val filesDirectory: File) {
+class WorldViewerBackup(
+    private val filesDirectory: File,
+    private val availableBytes: (File) -> Long = ::defaultAvailableBytes,
+) {
     fun create(
         destination: File,
         includeOriginalTexts: Boolean,
@@ -81,6 +87,7 @@ class WorldViewerBackup(private val filesDirectory: File) {
         if (!parent.exists() && !parent.mkdirs()) {
             throw BackupFormatException("백업 저장 폴더를 만들 수 없습니다.")
         }
+        ensureTemporarySpace(parent, preview.totalBytes)
         val temporary = File.createTempFile("worldviewer-backup-", ".partial", parent)
         try {
             FileOutputStream(temporary).use { fileOutput ->
@@ -326,6 +333,13 @@ class WorldViewerBackup(private val filesDirectory: File) {
         }
     }
 
+    private fun ensureTemporarySpace(parent: File, contentBytes: Long) {
+        val required = Math.addExact(contentBytes, TEMPORARY_SPACE_MARGIN_BYTES)
+        if (availableBytes(parent) < required) {
+            throw BackupFormatException("백업 임시 공간이 부족합니다. 기기 저장 공간을 확보한 뒤 다시 시도하세요.")
+        }
+    }
+
     private data class Candidate(val relativePath: String, val category: BackupCategory)
 
     private companion object {
@@ -337,6 +351,7 @@ class WorldViewerBackup(private val filesDirectory: File) {
         const val MAX_MANIFEST_BYTES = 4L * 1024 * 1024
         const val MAX_ENTRY_BYTES = 2L * 1024 * 1024 * 1024
         const val MAX_TOTAL_BYTES = 20L * 1024 * 1024 * 1024
+        const val TEMPORARY_SPACE_MARGIN_BYTES = 8L * 1024 * 1024
         const val BUFFER_SIZE = 64 * 1024
         val SAFE_PATH = Regex("[a-zA-Z0-9._/-]+")
         val SHA256 = Regex("[0-9a-f]{64}")
