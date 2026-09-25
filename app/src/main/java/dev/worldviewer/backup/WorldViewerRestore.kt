@@ -56,6 +56,12 @@ class WorldViewerRestore(private val filesDirectory: File) {
     fun restore(backupFile: File, policy: RestoreConflictPolicy): RestoreResult =
         restoreWithHook(backupFile, policy) { _, _ -> }
 
+    fun restore(
+        backupFile: File,
+        policy: RestoreConflictPolicy,
+        expectedPreview: RestorePreview,
+    ): RestoreResult = restoreWithHook(backupFile, policy, expectedPreview) { _, _ -> }
+
     /** Rolls back an interrupted commit, or finishes cleanup after a committed restore. */
     fun recoverInterruptedRestore(): Boolean = synchronized(RESTORE_LOCK) {
         recoverInterruptedLocked()
@@ -64,10 +70,14 @@ class WorldViewerRestore(private val filesDirectory: File) {
     internal fun restoreWithHook(
         backupFile: File,
         policy: RestoreConflictPolicy,
+        expectedPreview: RestorePreview? = null,
         beforeInstall: (relativePath: String, index: Int) -> Unit,
     ): RestoreResult = synchronized(RESTORE_LOCK) {
         recoverInterruptedLocked()
         val initialPreview = compareWithExisting(backupReader.inspect(backupFile))
+        if (expectedPreview != null && initialPreview != expectedPreview) {
+            throw BackupFormatException("복원 미리보기 이후 백업 또는 기존 데이터가 변경됐습니다. 다시 확인하세요.")
+        }
         if (policy == RestoreConflictPolicy.FAIL_ON_CONFLICT && initialPreview.conflicts.isNotEmpty()) {
             throw BackupFormatException("기존 데이터와 충돌하는 백업 항목이 있습니다.")
         }

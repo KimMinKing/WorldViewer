@@ -2,6 +2,7 @@ package dev.worldviewer
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.pm.ActivityInfo
 import android.content.res.ColorStateList
 import android.content.Intent
 import android.graphics.Color
@@ -13,6 +14,7 @@ import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.text.SpannableString
 import android.text.Spanned
+import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
 import android.util.Log
 import android.view.Gravity
@@ -31,6 +33,10 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import dev.worldviewer.backup.BackupFormatException
+import dev.worldviewer.backup.RestoreConflictPolicy
+import dev.worldviewer.backup.RestorePreview
+import dev.worldviewer.backup.WorldViewerBackup
 import dev.worldviewer.backup.WorldViewerRestore
 import dev.worldviewer.reader.AutoBookCover
 import dev.worldviewer.reader.AnnotationType
@@ -91,12 +97,15 @@ import java.util.concurrent.Executors
 import java.util.UUID
 import java.io.File
 import java.text.DateFormat
+import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Locale
 
 class MainActivity : Activity() {
     private val blockExecutor = Executors.newSingleThreadExecutor()
     private val pinyinExecutor = Executors.newSingleThreadExecutor()
     private val positionExecutor = Executors.newSingleThreadExecutor()
+    private val backupExecutor = Executors.newSingleThreadExecutor()
     private lateinit var rootLayout: LinearLayout
     private lateinit var reader: RecyclerView
     private lateinit var readerLayoutManager: LinearLayoutManager
@@ -129,6 +138,11 @@ class MainActivity : Activity() {
     private var activeSearchCancellation: TextSearchCancellation? = null
     private var activeSearchDialog: AlertDialog? = null
     private var searchGeneration = 0L
+    private var pendingBackupIncludesOriginals: Boolean? = null
+    private var pendingRestoreFile: File? = null
+    private var backupOperationDialog: AlertDialog? = null
+    private var backupOperationInProgress = false
+    private var restoreInProgress = false
     private val selectionRequestGate = SelectionRequestGate()
 
     private val pinyinScrollListener = object : RecyclerView.OnScrollListener() {
@@ -657,6 +671,251 @@ class MainActivity : Activity() {
         }
         @Suppress("DEPRECATION")
         startActivityForResult(picker, REQUEST_OPEN_TXT)
+    }
+
+    private fun showBackupRestoreMenu() {
+        if (backupOperationInProgress) {
+            Toast.makeText(this, R.string.backup_restore_busy, Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.backup_restore)
+            .setItems(
+                arrayOf(
+                    getString(R.string.backup_create),
+                    getString(R.string.restore_open),
+                ),
+            ) { _, which ->
+                if (which == 0) showBackupContentsChoice() else openRestorePicker()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showBackupContentsChoice() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.backup_contents_title)
+            .setMessage(R.string.backup_contents_message)
+            .setPositiveButton(R.string.backup_include_originals) { _, _ -> openBackupDestination(true) }
+            .setNeutralButton(R.string.backup_without_originals) { _, _ -> openBackupDestination(false) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun openBackupDestination(includeOriginals: Boolean) {
+        pendingBackupIncludesOriginals = includeOriginals
+        val timestamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+        val picker = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/vnd.worldviewer.backup"
+            putExtra(Intent.EXTRA_TITLE, "worldviewer-$timestamp.wvb")
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(picker, REQUEST_CREATE_BACKUP)
+    }
+
+    private fun openRestorePicker() {
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(picker, REQUEST_OPEN_BACKUP)
+    }
+
+    private fun createBackup(uri: Uri, includeOriginals: Boolean) {
+        val position = captureReadingPosition()
+        beginBackupOperation(getString(R.string.backup_creating), isRestore = false)
+        backupExecutor.execute {
+            var temporary: File? = null
+            val result = runCatching {
+                temporary = File.createTempFile("worldviewer-backup-", ".wvb", cacheDir)
+                position?.let { current ->
+                    positionExecutor.submit { readingPositionStore().save(current) }.get()
+                }
+                val preview = WorldViewerBackup(filesDir).create(
+                    destination = requireNotNull(temporary),
+                    includeOriginalTexts = includeOriginals,
+                )
+                val output = contentResolver.openOutputStream(uri, "wt")
+                    ?: throw BackupFormatException("선택한 위치에 백업을 쓸 수 없습니다.")
+                output.buffered().use { destination ->
+                    requireNotNull(temporary).inputStream().buffered().use { source -> source.copyTo(destination) }
+                }
+                preview
+            }
+            temporary?.delete()
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                endBackupOperation()
+                result.onSuccess { preview ->
+                    statusView.text = getString(
+                        R.string.backup_created,
+                        preview.entries.size,
+                        Formatter.formatShortFileSize(this, preview.totalBytes),
+                    )
+                    Toast.makeText(this, R.string.backup_created_short, Toast.LENGTH_SHORT).show()
+                    Log.i(
+                        RESTORE_TAG,
+                        "backup created entries=${preview.entries.size} bytes=${preview.totalBytes} " +
+                            "originals=${preview.originalTextCount}",
+                    )
+                }.onFailure { error -> showBackupRestoreFailure(R.string.backup_failed, error) }
+            }
+        }
+    }
+
+    private fun inspectRestore(uri: Uri, displayName: String) {
+        beginBackupOperation(getString(R.string.restore_inspecting, displayName), isRestore = false)
+        backupExecutor.execute {
+            var temporary: File? = null
+            val result = runCatching {
+                temporary = File.createTempFile("worldviewer-restore-", ".wvb", cacheDir)
+                copyRestoreSource(uri, requireNotNull(temporary))
+                WorldViewerRestore(filesDir).preview(requireNotNull(temporary))
+            }
+            runOnUiThread {
+                if (isDestroyed) {
+                    temporary?.delete()
+                    return@runOnUiThread
+                }
+                endBackupOperation()
+                result.onSuccess { preview -> showRestorePreview(requireNotNull(temporary), displayName, preview) }
+                    .onFailure { error ->
+                        temporary?.delete()
+                        showBackupRestoreFailure(R.string.restore_inspect_failed, error)
+                    }
+            }
+        }
+    }
+
+    private fun copyRestoreSource(uri: Uri, destination: File) {
+        val declaredSize = contentSize(uri)
+        if (declaredSize != null && declaredSize > MAX_BACKUP_ARCHIVE_BYTES) {
+            throw BackupFormatException("백업 파일이 허용 크기를 넘습니다.")
+        }
+        val input = contentResolver.openInputStream(uri)
+            ?: throw BackupFormatException("선택한 백업 파일을 읽을 수 없습니다.")
+        input.buffered().use { source ->
+            destination.outputStream().buffered().use { output ->
+                val buffer = ByteArray(BACKUP_COPY_BUFFER_SIZE)
+                var copied = 0L
+                while (true) {
+                    val read = source.read(buffer)
+                    if (read < 0) break
+                    copied += read
+                    if (copied > MAX_BACKUP_ARCHIVE_BYTES) {
+                        throw BackupFormatException("백업 파일이 허용 크기를 넘습니다.")
+                    }
+                    output.write(buffer, 0, read)
+                }
+            }
+        }
+    }
+
+    private fun showRestorePreview(file: File, displayName: String, preview: RestorePreview) {
+        pendingRestoreFile?.delete()
+        pendingRestoreFile = file
+        val message = getString(
+            R.string.restore_preview_message,
+            displayName,
+            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                .format(Date(preview.backup.createdAtEpochMillis)),
+            preview.backup.entries.size,
+            Formatter.formatShortFileSize(this, preview.backup.totalBytes),
+            preview.backup.originalTextCount,
+            preview.newPaths.size,
+            preview.unchangedPaths.size,
+            preview.conflicts.size,
+        )
+        val builder = AlertDialog.Builder(this)
+            .setTitle(R.string.restore_preview_title)
+            .setMessage(message)
+        if (preview.conflicts.isNotEmpty()) {
+            builder
+                .setPositiveButton(R.string.restore_keep_existing) { _, _ ->
+                    if (pendingRestoreFile === file) pendingRestoreFile = null
+                    applyRestore(file, preview, RestoreConflictPolicy.KEEP_EXISTING)
+                }
+                .setNeutralButton(R.string.restore_replace_existing) { _, _ ->
+                    if (pendingRestoreFile === file) pendingRestoreFile = null
+                    applyRestore(file, preview, RestoreConflictPolicy.REPLACE_EXISTING)
+                }
+        } else {
+            builder.setPositiveButton(R.string.restore_apply) { _, _ ->
+                if (pendingRestoreFile === file) pendingRestoreFile = null
+                applyRestore(file, preview, RestoreConflictPolicy.KEEP_EXISTING)
+            }
+        }
+        val dialog = builder
+            .setNegativeButton(android.R.string.cancel) { _, _ -> clearPendingRestore(file) }
+            .create()
+        dialog.setOnCancelListener { clearPendingRestore(file) }
+        dialog.show()
+    }
+
+    private fun clearPendingRestore(file: File) {
+        if (pendingRestoreFile === file) pendingRestoreFile = null
+        file.delete()
+    }
+
+    private fun applyRestore(file: File, preview: RestorePreview, policy: RestoreConflictPolicy) {
+        beginBackupOperation(getString(R.string.restore_applying), isRestore = true)
+        backupExecutor.execute {
+            val result = runCatching {
+                positionExecutor.submit { }.get()
+                WorldViewerRestore(filesDir).restore(file, policy, preview)
+            }
+            file.delete()
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onSuccess { restored ->
+                    endBackupOperation(keepRestoreGuard = true)
+                    Log.i(
+                        RESTORE_TAG,
+                        "restore applied=${restored.appliedPaths.size} skipped=${restored.skippedPaths.size} " +
+                            "policy=$policy",
+                    )
+                    Toast.makeText(this, R.string.restore_complete, Toast.LENGTH_SHORT).show()
+                    startActivity(Intent(this, MainActivity::class.java))
+                    finish()
+                }.onFailure { error ->
+                    endBackupOperation()
+                    showBackupRestoreFailure(R.string.restore_failed, error)
+                }
+            }
+        }
+    }
+
+    private fun beginBackupOperation(message: String, isRestore: Boolean) {
+        backupOperationInProgress = true
+        restoreInProgress = isRestore
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
+        statusView.text = message
+        backupOperationDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.backup_restore)
+            .setMessage(message)
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun endBackupOperation(keepRestoreGuard: Boolean = false) {
+        backupOperationDialog?.dismiss()
+        backupOperationDialog = null
+        backupOperationInProgress = false
+        if (!keepRestoreGuard) {
+            restoreInProgress = false
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
+    private fun showBackupRestoreFailure(title: Int, error: Throwable) {
+        Log.e(RESTORE_TAG, "backup or restore operation failed", error)
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(error.message ?: getString(R.string.unknown_error))
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
     }
 
     private fun showBookshelf() {
@@ -1485,6 +1744,20 @@ class MainActivity : Activity() {
     @Deprecated("Uses the platform file picker without adding an Activity Result dependency.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CREATE_BACKUP) {
+            val includeOriginals = pendingBackupIncludesOriginals
+            pendingBackupIncludesOriginals = null
+            if (resultCode == RESULT_OK && includeOriginals != null) {
+                data?.data?.let { uri -> createBackup(uri, includeOriginals) }
+            }
+            return
+        }
+        if (requestCode == REQUEST_OPEN_BACKUP) {
+            if (resultCode == RESULT_OK) {
+                data?.data?.let { uri -> inspectRestore(uri, displayName(uri)) }
+            }
+            return
+        }
         if (requestCode != REQUEST_OPEN_TXT || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         val displayName = displayName(uri)
@@ -1754,10 +2027,14 @@ class MainActivity : Activity() {
 
     private fun showReaderTools() {
         val actions = if (currentDocumentSha256 == null) {
-            listOf(getString(R.string.vocabulary))
+            listOf(
+                getString(R.string.vocabulary),
+                getString(R.string.backup_restore),
+            )
         } else {
             listOf(
                 getString(R.string.vocabulary),
+                getString(R.string.backup_restore),
                 getString(R.string.bookmark_here),
                 getString(R.string.annotations),
             )
@@ -1767,8 +2044,9 @@ class MainActivity : Activity() {
             .setItems(actions.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> showVocabulary()
-                    1 -> addBookmarkHere()
-                    2 -> showAnnotations()
+                    1 -> showBackupRestoreMenu()
+                    2 -> addBookmarkHere()
+                    3 -> showAnnotations()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -2592,7 +2870,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
-        persistReadingPosition()
+        if (!restoreInProgress) persistReadingPosition()
         super.onStop()
     }
 
@@ -2602,6 +2880,10 @@ class MainActivity : Activity() {
         activeImportCancellation = null
         pendingImport?.close()
         pendingImport = null
+        pendingRestoreFile?.delete()
+        pendingRestoreFile = null
+        backupOperationDialog?.dismiss()
+        backupOperationDialog = null
         selectionGestureController?.dispose()
         if (::reader.isInitialized) reader.removeOnScrollListener(pinyinScrollListener)
         pinyinCoordinator?.close()
@@ -2609,6 +2891,7 @@ class MainActivity : Activity() {
         blockExecutor.shutdownNow()
         pinyinExecutor.shutdownNow()
         positionExecutor.shutdown()
+        backupExecutor.shutdown()
         super.onDestroy()
     }
 
@@ -2650,6 +2933,8 @@ class MainActivity : Activity() {
     private companion object {
         const val MAX_BLOCK_UTF16 = 768
         const val REQUEST_OPEN_TXT = 1001
+        const val REQUEST_CREATE_BACKUP = 1002
+        const val REQUEST_OPEN_BACKUP = 1003
         const val STATE_FIRST_VISIBLE_POSITION = "reader.firstVisiblePosition"
         const val STATE_FIRST_VISIBLE_OFFSET = "reader.firstVisibleOffset"
         const val STATE_READER_WIDTH = "reader.width"
@@ -2682,6 +2967,8 @@ class MainActivity : Activity() {
         const val NAVIGATION_TAG = "WorldViewerNavigation"
         const val BLOCK_SOURCE_TAG = "WorldViewerBlocks"
         const val TEXT_INDEX_DIRECTORY = "text-index"
+        const val BACKUP_COPY_BUFFER_SIZE = 64 * 1024
+        const val MAX_BACKUP_ARCHIVE_BYTES = 21L * 1024 * 1024 * 1024
         const val DEFAULT_SELECTION_DELAY = 350
         const val FINAL_ANCHOR_RESTORE_DELAY_MS = 350L
         const val NAVIGATION_SETTLE_DELAY_MS = 450L

@@ -78,6 +78,26 @@ class WorldViewerRestoreTest {
     }
 
     @Test
+    fun `data changed after preview requires another confirmation`() {
+        val source = dataRoot("source-stale-preview", meaning = "백업")
+        val backupFile = temporary.newFile("stale-preview.wvb")
+        WorldViewerBackup(source).create(backupFile, includeOriginalTexts = false, createdAtEpochMillis = 9)
+        val target = dataRoot("target-stale-preview", meaning = "미리보기 당시")
+        val restore = WorldViewerRestore(target)
+        val preview = restore.preview(backupFile)
+        UserMeaningStore(File(target, "user-meanings")).save(
+            UserMeaningStore(File(target, "user-meanings")).load().map { it.copy(meaning = "확인 뒤 변경") },
+        )
+        val changed = snapshot(target)
+
+        assertThrows(BackupFormatException::class.java) {
+            restore.restore(backupFile, RestoreConflictPolicy.REPLACE_EXISTING, preview)
+        }
+
+        assertSnapshot(changed, target)
+    }
+
+    @Test
     fun `interrupted replacement rolls back files already installed`() {
         val source = dataRoot("source-rollback", meaning = "백업")
         val backupFile = temporary.newFile("rollback.wvb")
