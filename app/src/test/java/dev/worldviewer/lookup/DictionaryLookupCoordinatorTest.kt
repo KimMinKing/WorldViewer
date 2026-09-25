@@ -106,6 +106,62 @@ class DictionaryLookupCoordinatorTest {
         }
     }
 
+    @Test
+    fun `timeout cancels work and is delivered once`() {
+        val worker = ManualExecutor()
+        val delivery = ManualExecutor()
+        val scheduler = ManualTimeoutScheduler()
+        val results = mutableListOf<Result<DictionaryLookupResponse>>()
+        val coordinator = DictionaryLookupCoordinator(
+            worker = worker,
+            deliver = delivery::deliver,
+            timeoutPolicy = LookupTimeoutPolicy(1_500, scheduler),
+            onResult = { _, result -> results += result },
+        )
+        var providerCalls = 0
+        coordinator.request(request("超时", 1), DictionaryLookupProvider { request, _ ->
+            providerCalls++
+            response(request.sourceText)
+        })
+
+        scheduler.runAll()
+        delivery.runAll()
+        worker.runAll()
+        delivery.runAll()
+
+        assertEquals(0, providerCalls)
+        assertEquals(1, results.size)
+        val error = results.single().exceptionOrNull()
+        assertTrue(error is LookupTimeoutException)
+        assertEquals(1_500, (error as LookupTimeoutException).timeoutMillis)
+    }
+
+    @Test
+    fun `completed lookup cancels its timeout`() {
+        val worker = ManualExecutor()
+        val delivery = ManualExecutor()
+        val scheduler = ManualTimeoutScheduler()
+        val delivered = mutableListOf<String>()
+        val coordinator = DictionaryLookupCoordinator(
+            worker = worker,
+            deliver = delivery::deliver,
+            timeoutPolicy = LookupTimeoutPolicy(1_500, scheduler),
+            onResult = { request, result ->
+                result.getOrThrow()
+                delivered += request.sourceText
+            },
+        )
+
+        coordinator.request(request("及时", 1), DictionaryLookupProvider { request, _ ->
+            response(request.sourceText)
+        })
+        worker.runAll()
+        scheduler.runAll()
+        delivery.runAll()
+
+        assertEquals(listOf("及时"), delivered)
+    }
+
     private fun request(source: String, selectionVersion: Long) = DictionaryLookupRequest(
         sourceText = source,
         documentId = "book-id",
@@ -143,5 +199,26 @@ class DictionaryLookupCoordinatorTest {
         fun runAll() {
             while (tasks.isNotEmpty()) runNext()
         }
+    }
+
+    private class ManualTimeoutScheduler : LookupTimeoutScheduler {
+        private val tasks = ArrayDeque<ScheduledTask>()
+
+        override fun schedule(delayMillis: Long, action: () -> Unit): LookupTimeoutHandle {
+            val task = ScheduledTask(action)
+            tasks += task
+            return LookupTimeoutHandle { task.cancelled = true }
+        }
+
+        fun runAll() {
+            while (tasks.isNotEmpty()) {
+                tasks.removeFirst().let { if (!it.cancelled) it.action() }
+            }
+        }
+
+        private data class ScheduledTask(
+            val action: () -> Unit,
+            var cancelled: Boolean = false,
+        )
     }
 }
