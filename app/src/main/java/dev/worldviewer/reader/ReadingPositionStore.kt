@@ -35,7 +35,7 @@ class ReadingPositionStore(private val directory: File) {
         return DataInputStream(BufferedInputStream(target.inputStream())).use { input ->
             if (input.readInt() != MAGIC) throw TxtImportException("읽기 위치 정보가 손상됐습니다.")
             if (input.readInt() != VERSION) throw TxtImportException("지원하지 않는 읽기 위치 정보입니다.")
-            ReadingPosition(
+            val position = ReadingPosition(
                 documentSha256 = input.readUTF(),
                 blockIndex = input.readInt(),
                 utf16Offset = input.readInt(),
@@ -47,6 +47,8 @@ class ReadingPositionStore(private val directory: File) {
                     throw TxtImportException("읽기 위치의 문서 식별자가 일치하지 않습니다.")
                 }
             }
+            input.requirePersistentRecordEnd("읽기 위치 정보")
+            position
         }
     }
 

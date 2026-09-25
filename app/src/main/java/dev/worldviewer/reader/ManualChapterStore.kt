@@ -42,7 +42,7 @@ class ManualChapterStore(private val directory: File) {
                 }
                 val count = input.readInt()
                 if (count !in 0..MAX_CHAPTERS) throw TxtImportException("수동 목차 개수가 올바르지 않습니다.")
-                List(count) {
+                val chapters = List(count) {
                     ManualChapter(
                         id = input.readUTF(),
                         title = input.readUTF(),
@@ -55,6 +55,8 @@ class ManualChapterStore(private val directory: File) {
                         throw TxtImportException("수동 목차 식별자가 중복됐습니다.")
                     }
                 }
+                input.requirePersistentRecordEnd("수동 목차 정보")
+                chapters
             }
         } catch (error: TxtImportException) {
             throw error

@@ -44,7 +44,7 @@ class UserAnnotationStore(private val directory: File) {
                 if (input.readInt() != VERSION) throw TxtImportException("지원하지 않는 주석 정보입니다.")
                 val count = input.readInt()
                 if (count !in 0..MAX_ANNOTATIONS) throw TxtImportException("주석 개수가 올바르지 않습니다.")
-                List(count) {
+                val annotations = List(count) {
                     UserAnnotation(
                         id = input.readUTF(),
                         type = runCatching { AnnotationType.valueOf(input.readUTF()) }
@@ -60,6 +60,8 @@ class UserAnnotationStore(private val directory: File) {
                         updatedAtEpochMillis = input.readLong(),
                     ).also(::validate)
                 }.also(::validateAll)
+                input.requirePersistentRecordEnd("주석 정보")
+                annotations
             }
         } catch (error: TxtImportException) {
             throw error

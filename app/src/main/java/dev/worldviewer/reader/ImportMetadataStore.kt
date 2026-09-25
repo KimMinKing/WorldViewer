@@ -34,13 +34,15 @@ class ImportMetadataStore(private val directory: File) {
         return DataInputStream(BufferedInputStream(target.inputStream())).use { input ->
             if (input.readInt() != MAGIC) throw TxtImportException("최근 문서 정보가 손상됐습니다.")
             if (input.readInt() != VERSION) throw TxtImportException("지원하지 않는 최근 문서 정보입니다.")
-            ImportMetadata(
+            val metadata = ImportMetadata(
                 storedName = input.readUTF(),
                 displayName = input.readUTF(),
                 sha256 = input.readUTF(),
                 byteCount = input.readLong(),
                 encoding = input.readUTF(),
             ).also(::validate)
+            input.requirePersistentRecordEnd("최근 문서 정보")
+            metadata
         }
     }
 

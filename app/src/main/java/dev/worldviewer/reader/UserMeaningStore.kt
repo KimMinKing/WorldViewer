@@ -86,7 +86,7 @@ class UserMeaningStore(private val directory: File) {
                 if (input.readInt() != VERSION) throw TxtImportException("지원하지 않는 사용자 뜻 정보입니다.")
                 val count = input.readInt()
                 if (count !in 0..MAX_MEANINGS) throw TxtImportException("사용자 뜻 개수가 올바르지 않습니다.")
-                List(count) {
+                val meanings = List(count) {
                     UserMeaning(
                         id = input.readUTF(),
                         sourceText = input.readUTF(),
@@ -100,6 +100,8 @@ class UserMeaningStore(private val directory: File) {
                         updatedAtEpochMillis = input.readLong(),
                     ).also(::validateMeaning)
                 }.also(::validateAll)
+                input.requirePersistentRecordEnd("사용자 뜻 정보")
+                meanings
             }
         } catch (error: TxtImportException) {
             throw error

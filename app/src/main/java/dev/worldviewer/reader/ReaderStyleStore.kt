@@ -49,7 +49,9 @@ class ReaderStyleStore(private val directory: File) {
             if (entries.map(Pair<String, ReaderStyle>::first).toSet().size != entries.size) {
                 throw TxtImportException("책별 스타일에 중복 식별자가 있습니다.")
             }
-            ReaderStylePreferences(defaultStyle, entries.toMap()).also(::validate)
+            val preferences = ReaderStylePreferences(defaultStyle, entries.toMap()).also(::validate)
+            input.requirePersistentRecordEnd("독서 스타일 정보")
+            preferences
         }
     }
 

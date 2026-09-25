@@ -39,7 +39,7 @@ class BookCatalogStore(private val directory: File) {
             }
             val count = input.readInt()
             if (count !in 0..MAX_BOOKS) throw TxtImportException("책 목록 개수가 올바르지 않습니다.")
-            BookCatalog(
+            val catalog = BookCatalog(
                 currentBookId = currentBookId,
                 books = List(count) {
                     BookCatalogEntry(
@@ -54,6 +54,8 @@ class BookCatalogStore(private val directory: File) {
                     )
                 },
             ).also(::validate)
+            input.requirePersistentRecordEnd("책 목록 정보")
+            catalog
         }
     }
 
