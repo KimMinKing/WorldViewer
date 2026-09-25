@@ -182,9 +182,22 @@ class MainActivity : Activity() {
             text = getString(R.string.reader_loading, BuildConfig.VERSION_NAME)
         }
         val selectionControls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
+        val selectionControlRows = List(2) {
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                selectionControls.addView(
+                    this,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    ),
+                )
+            }
+        }
+        var selectionButtonCount = 0
         fun selectionButton(
             label: String,
             accessibilityLabel: String,
@@ -194,10 +207,11 @@ class MainActivity : Activity() {
             textSize = 12f
             contentDescription = accessibilityLabel
             setOnClickListener { action() }
-            selectionControls.addView(
+            selectionControlRows[selectionButtonCount / SELECTION_BUTTONS_PER_ROW].addView(
                 this,
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
             )
+            selectionButtonCount += 1
         }
         selectionButton("시작←", "선택 시작을 한 글자 앞쪽으로 확장") {
             selectionGestureController?.adjust(SelectionEdge.START, -1)
@@ -816,6 +830,7 @@ class MainActivity : Activity() {
     private fun showRestorePreview(file: File, displayName: String, preview: RestorePreview) {
         pendingRestoreFile?.delete()
         pendingRestoreFile = file
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
         val message = getString(
             R.string.restore_preview_message,
             displayName,
@@ -855,7 +870,10 @@ class MainActivity : Activity() {
     }
 
     private fun clearPendingRestore(file: File) {
-        if (pendingRestoreFile === file) pendingRestoreFile = null
+        if (pendingRestoreFile === file) {
+            pendingRestoreFile = null
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
         file.delete()
     }
 
@@ -2969,6 +2987,7 @@ class MainActivity : Activity() {
         const val TEXT_INDEX_DIRECTORY = "text-index"
         const val BACKUP_COPY_BUFFER_SIZE = 64 * 1024
         const val MAX_BACKUP_ARCHIVE_BYTES = 21L * 1024 * 1024 * 1024
+        const val SELECTION_BUTTONS_PER_ROW = 4
         const val DEFAULT_SELECTION_DELAY = 350
         const val FINAL_ANCHOR_RESTORE_DELAY_MS = 350L
         const val NAVIGATION_SETTLE_DELAY_MS = 450L
