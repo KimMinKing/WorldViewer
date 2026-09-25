@@ -21,4 +21,11 @@ debug APK는 `app/build/outputs/apk/debug/app-debug.apk`에 생성된다. ADB에
 .\gradlew.bat installDebug
 ```
 
+성능 회귀에는 release 설정을 상속하지만 별도 앱 ID와 debug 서명을 쓰는 비디버그 가능 `benchmark` 변형을 사용한다. 배포 산출물이 아니다.
+
+```powershell
+.\gradlew.bat assembleBenchmark
+.\tools\generate-reader-benchmark-fixture.ps1 -OutputPath app\build\tmp\reader-50mib.txt -SizeMiB 50
+```
+
 현재 build·test·lint, API 36 에뮬레이터와 Galaxy Z Flip4(Android 16/API 36)의 설치·실행, 블록 렌더링·선택·오프라인 병음 배치를 확인했다. 기준 기기는 USB ADB 호환 문제로 무선 디버깅을 사용한다. 측정값과 다음 작업은 [docs/STATUS.md](docs/STATUS.md)에 기록한다.
