@@ -25,6 +25,7 @@ class TextBlockAdapter(
     ) : this(InMemoryTextBlockSource(blocks), renderer, readerStyle)
 
     private var selection: SelectionRange? = null
+    private var highlights: List<SelectionRange> = emptyList()
     private var completedPinyinSelection: SelectionRange? = null
     private var pinyinMode = PinyinDisplayMode.ORIGINAL
     private var pinyinByPosition: Map<Int, List<PinyinReading>> = emptyMap()
@@ -78,6 +79,7 @@ class TextBlockAdapter(
         holder.bind(
             block,
             selection,
+            highlights,
             completedPinyinSelection,
             pinyinMode,
             pinyinByPosition[position],
@@ -154,6 +156,12 @@ class TextBlockAdapter(
     fun setSelection(range: SelectionRange?) {
         if (selection == range) return
         selection = range
+        notifyItemRangeChanged(0, itemCount, SELECTION_PAYLOAD)
+    }
+
+    fun setHighlights(ranges: List<SelectionRange>) {
+        if (highlights == ranges) return
+        highlights = ranges
         notifyItemRangeChanged(0, itemCount, SELECTION_PAYLOAD)
     }
 
@@ -257,6 +265,7 @@ class TextBlockAdapter(
         fun bind(
             block: TextBlock,
             selection: SelectionRange?,
+            highlights: List<SelectionRange>,
             completedPinyinSelection: SelectionRange?,
             pinyinMode: PinyinDisplayMode,
             readings: List<PinyinReading>?,
@@ -265,7 +274,7 @@ class TextBlockAdapter(
         ) {
             when (val view = itemView) {
                 is PinyinTextView -> {
-                    view.text = block.displayText(selection, readerStyle)
+                    view.text = block.displayText(selection, highlights, readerStyle)
                     view.bindRuby(
                         blockStartUtf16 = block.startUtf16,
                         readings = readings,
@@ -274,15 +283,26 @@ class TextBlockAdapter(
                         overrides = overrides,
                     )
                 }
-                is TextView -> view.text = block.displayText(selection, readerStyle)
+                is TextView -> view.text = block.displayText(selection, highlights, readerStyle)
                 is StaticTextBlockView -> view.bind(block)
             }
         }
 
         private fun TextBlock.displayText(
             selection: SelectionRange?,
+            highlights: List<SelectionRange>,
             readerStyle: ReaderStyle,
         ): CharSequence = SpannableString(text).apply {
+            highlights.forEach { highlight ->
+                if (highlight.endUtf16 > startUtf16 && highlight.startUtf16 < endUtf16) {
+                    setSpan(
+                        BackgroundColorSpan(readerStyle.highlightColor()),
+                        (highlight.startUtf16 - startUtf16).coerceAtLeast(0),
+                        (highlight.endUtf16 - startUtf16).coerceAtMost(text.length),
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+            }
             if (selection != null && selection.endUtf16 > startUtf16 && selection.startUtf16 < endUtf16) {
                 val localStart = (selection.startUtf16 - startUtf16).coerceAtLeast(0)
                 val localEnd = (selection.endUtf16 - startUtf16).coerceAtMost(text.length)
@@ -319,6 +339,11 @@ internal fun ReaderStyle.textColor(): Int = when (theme) {
 internal fun ReaderStyle.selectionColor(): Int = when (theme) {
     ReaderTheme.LIGHT -> Color.rgb(255, 224, 130)
     ReaderTheme.DARK -> Color.rgb(112, 85, 35)
+}
+
+internal fun ReaderStyle.highlightColor(): Int = when (theme) {
+    ReaderTheme.LIGHT -> Color.rgb(255, 235, 120)
+    ReaderTheme.DARK -> Color.rgb(112, 91, 28)
 }
 
 enum class PinyinDisplayMode {

@@ -32,6 +32,7 @@ import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import dev.worldviewer.reader.AutoBookCover
+import dev.worldviewer.reader.AnnotationType
 import dev.worldviewer.reader.AutomaticChapter
 import dev.worldviewer.reader.AutomaticChapterDetector
 import dev.worldviewer.reader.BlockRenderer
@@ -75,6 +76,7 @@ import dev.worldviewer.reader.UserMeaningStore
 import dev.worldviewer.reader.UserMeaning
 import dev.worldviewer.reader.UserMeaningIndex
 import dev.worldviewer.reader.UserAnnotationStore
+import dev.worldviewer.reader.UserAnnotation
 import dev.worldviewer.pinyin.PinyinBlockCoordinator
 import dev.worldviewer.pinyin.UnihanPinyinAdapter
 import dev.worldviewer.pinyin.UnihanPinyinTable
@@ -82,6 +84,7 @@ import dev.worldviewer.selection.SelectionGestureController
 import dev.worldviewer.selection.CachedBlockSelectionTextNavigator
 import dev.worldviewer.selection.SelectionEdge
 import dev.worldviewer.selection.SelectionRange
+import dev.worldviewer.selection.SelectionRequestGate
 import dev.worldviewer.selection.StringSelectionTextNavigator
 import java.util.concurrent.Executors
 import java.util.UUID
@@ -125,7 +128,7 @@ class MainActivity : Activity() {
     private var activeSearchCancellation: TextSearchCancellation? = null
     private var activeSearchDialog: AlertDialog? = null
     private var searchGeneration = 0L
-    private var selectionVersion = 0L
+    private val selectionRequestGate = SelectionRequestGate()
 
     private val pinyinScrollListener = object : RecyclerView.OnScrollListener() {
         override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
@@ -192,6 +195,9 @@ class MainActivity : Activity() {
         }
         selectionButton("뜻", "선택한 원문의 저장된 뜻 보기") {
             showSelectedMeanings()
+        }
+        selectionButton("주석", "선택한 원문에 강조 또는 메모 추가") {
+            showSelectionAnnotationMenu()
         }
         selectionButton("발음", "선택한 첫 글자의 임시 병음 수정") {
             editSelectedPinyin()
@@ -324,10 +330,10 @@ class MainActivity : Activity() {
         )
         pinyinControls.addView(
             Button(this).apply {
-                text = getString(R.string.vocabulary_short)
+                text = getString(R.string.reader_tools)
                 textSize = 12f
-                contentDescription = getString(R.string.vocabulary_description)
-                setOnClickListener { showVocabulary() }
+                contentDescription = getString(R.string.reader_tools_description)
+                setOnClickListener { showReaderTools() }
             },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
@@ -550,7 +556,7 @@ class MainActivity : Activity() {
                         } ?: StringSelectionTextNavigator(sourceText),
                         confirmationDelayMillis = delay.toLong(),
                         onSelectionChanged = { range ->
-                            selectionVersion++
+                            selectionRequestGate.selectionChanged()
                             selectionControls.visibility = if (range == null) View.GONE else View.VISIBLE
                         },
                         onSelectionCompleted = { range ->
@@ -635,6 +641,7 @@ class MainActivity : Activity() {
                 if (pinyinMode != PinyinDisplayMode.ORIGINAL) {
                     reader.post { requestVisiblePinyin() }
                 }
+                refreshHighlights()
             }
         }
     }
@@ -1741,6 +1748,270 @@ class MainActivity : Activity() {
         preserveReaderAnchor { adapter.setPinyinReadings(readings) }
     }
 
+    private fun showReaderTools() {
+        val actions = if (currentDocumentSha256 == null) {
+            listOf(getString(R.string.vocabulary))
+        } else {
+            listOf(
+                getString(R.string.vocabulary),
+                getString(R.string.bookmark_here),
+                getString(R.string.annotations),
+            )
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.reader_tools)
+            .setItems(actions.toTypedArray()) { _, which ->
+                when (which) {
+                    0 -> showVocabulary()
+                    1 -> addBookmarkHere()
+                    2 -> showAnnotations()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun addBookmarkHere() {
+        val position = captureReadingPosition() ?: return
+        val now = System.currentTimeMillis()
+        val value = UserAnnotation(
+            id = UUID.randomUUID().toString(),
+            type = AnnotationType.BOOKMARK,
+            documentSha256 = position.documentSha256,
+            startUtf16 = position.utf16Offset,
+            endUtf16 = position.utf16Offset,
+            quoteBefore = position.quoteBefore,
+            quoteSelected = "",
+            quoteAfter = position.quoteAfter,
+            note = null,
+            createdAtEpochMillis = now,
+            updatedAtEpochMillis = now,
+        )
+        updateAnnotations({ it + value }) { showAnnotations() }
+    }
+
+    private fun showSelectionAnnotationMenu() {
+        val documentId = currentDocumentSha256
+        val range = selectionGestureController?.completedSelection()
+        val selected = range?.let(::selectedSourceText)
+        if (documentId == null || range == null || selected.isNullOrBlank()) {
+            Toast.makeText(this, R.string.annotation_selection_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val target = AnnotationTarget(
+            documentId,
+            range,
+            selected.safeUtf16Prefix(UserAnnotationStore.MAX_SELECTED_UTF16),
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.annotation_add)
+            .setItems(arrayOf(getString(R.string.highlight_add), getString(R.string.note_add))) { _, which ->
+                if (which == 0) addSelectionAnnotation(target, AnnotationType.HIGHLIGHT, null)
+                else showAddNote(target)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showAddNote(target: AnnotationTarget) {
+        val input = EditText(this).apply {
+            hint = getString(R.string.note_hint)
+            minLines = 3
+            maxLines = 7
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.note_add)
+            .setView(input)
+            .setPositiveButton(R.string.annotation_save) { _, _ ->
+                addSelectionAnnotation(target, AnnotationType.NOTE, input.text.toString().trim())
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun addSelectionAnnotation(target: AnnotationTarget, type: AnnotationType, note: String?) {
+        val now = System.currentTimeMillis()
+        val value = UserAnnotation(
+            id = UUID.randomUUID().toString(),
+            type = type,
+            documentSha256 = target.documentSha256,
+            startUtf16 = target.range.startUtf16,
+            endUtf16 = target.range.endUtf16,
+            quoteBefore = "",
+            quoteSelected = target.selectedText,
+            quoteAfter = "",
+            note = note,
+            createdAtEpochMillis = now,
+            updatedAtEpochMillis = now,
+        )
+        updateAnnotations({ it + value }) {
+            selectionGestureController?.cancelSelection()
+            refreshHighlights()
+        }
+    }
+
+    private fun showAnnotations() {
+        val documentId = currentDocumentSha256 ?: return
+        blockExecutor.execute {
+            val result = runCatching {
+                userAnnotationStore().load()
+                    .filter { it.documentSha256 == documentId }
+                    .sortedWith(compareBy<UserAnnotation> { it.startUtf16 }.thenBy { it.createdAtEpochMillis })
+            }
+            runOnUiThread {
+                if (isDestroyed || currentDocumentSha256 != documentId) return@runOnUiThread
+                result.onSuccess(::showAnnotationsDialog).onFailure(::showAnnotationFailure)
+            }
+        }
+    }
+
+    private fun showAnnotationsDialog(values: List<UserAnnotation>) {
+        if (values.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.annotations)
+                .setMessage(R.string.annotations_empty)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.annotations)
+            .setItems(values.map { value ->
+                getString(
+                    R.string.annotation_item,
+                    annotationTypeLabel(value.type),
+                    ReadingProgress.fromOffset(value.startUtf16, documentUtf16Length) / 10.0,
+                    annotationPreview(value),
+                )
+            }.toTypedArray()) { _, which -> values.getOrNull(which)?.let(::showAnnotationActions) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showAnnotationActions(value: UserAnnotation) {
+        val neutralLabel = if (value.type == AnnotationType.NOTE) R.string.note_edit else R.string.annotation_delete
+        AlertDialog.Builder(this)
+            .setTitle(annotationTypeLabel(value.type))
+            .setMessage(annotationPreview(value))
+            .setPositiveButton(R.string.table_of_contents_go) { _, _ ->
+                val origin = captureReaderAnchor() ?: return@setPositiveButton
+                navigateToUtf16(value.startUtf16, origin, reader.paddingTop + 1)
+            }
+            .setNeutralButton(neutralLabel) { _, _ ->
+                if (value.type == AnnotationType.NOTE) editNote(value) else confirmDeleteAnnotation(value)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun editNote(value: UserAnnotation) {
+        val input = EditText(this).apply {
+            setText(value.note.orEmpty())
+            minLines = 3
+            maxLines = 7
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.note_edit)
+            .setView(input)
+            .setPositiveButton(R.string.annotation_save) { _, _ ->
+                updateAnnotations({ values ->
+                    values.map { saved ->
+                        if (saved.id == value.id) saved.copy(
+                            note = input.text.toString().trim(),
+                            updatedAtEpochMillis = System.currentTimeMillis(),
+                        ) else saved
+                    }
+                }) { showAnnotations() }
+            }
+            .setNeutralButton(R.string.annotation_delete) { _, _ -> confirmDeleteAnnotation(value) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun confirmDeleteAnnotation(value: UserAnnotation) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.annotation_delete)
+            .setMessage(R.string.annotation_delete_message)
+            .setPositiveButton(R.string.annotation_delete) { _, _ ->
+                updateAnnotations({ values -> values.filterNot { it.id == value.id } }) {
+                    refreshHighlights()
+                    showAnnotations()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun updateAnnotations(
+        transform: (List<UserAnnotation>) -> List<UserAnnotation>,
+        onSuccess: () -> Unit,
+    ) {
+        blockExecutor.execute {
+            val result = runCatching {
+                val store = userAnnotationStore()
+                store.save(transform(store.load()))
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onSuccess {
+                    Toast.makeText(this, R.string.annotation_saved, Toast.LENGTH_SHORT).show()
+                    onSuccess()
+                }.onFailure(::showAnnotationFailure)
+            }
+        }
+    }
+
+    private fun refreshHighlights() {
+        val documentId = currentDocumentSha256
+        if (documentId == null) {
+            textBlockAdapter?.setHighlights(emptyList())
+            return
+        }
+        blockExecutor.execute {
+            val result = runCatching {
+                userAnnotationStore().load().filter {
+                    it.documentSha256 == documentId && it.type == AnnotationType.HIGHLIGHT
+                }.map { SelectionRange(it.startUtf16, it.endUtf16) }
+            }
+            runOnUiThread {
+                if (!isDestroyed && currentDocumentSha256 == documentId) {
+                    result.onSuccess { ranges -> textBlockAdapter?.setHighlights(ranges) }
+                        .onFailure(::showAnnotationFailure)
+                }
+            }
+        }
+    }
+
+    private fun annotationTypeLabel(type: AnnotationType): String = getString(
+        when (type) {
+            AnnotationType.BOOKMARK -> R.string.bookmark
+            AnnotationType.HIGHLIGHT -> R.string.highlight
+            AnnotationType.NOTE -> R.string.note
+        },
+    )
+
+    private fun annotationPreview(value: UserAnnotation): String =
+        (value.note ?: value.quoteSelected.ifBlank { value.quoteAfter })
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .safeUtf16Prefix(80)
+
+    private fun String.safeUtf16Prefix(maximum: Int): String {
+        if (length <= maximum) return this
+        val end = if (maximum > 0 && Character.isHighSurrogate(this[maximum - 1])) maximum - 1 else maximum
+        return substring(0, end)
+    }
+
+    private fun showAnnotationFailure(error: Throwable) {
+        Log.e(ANNOTATION_TAG, "annotation operation failed", error)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.annotation_failed)
+            .setMessage(error.message ?: getString(R.string.unknown_error))
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
     private fun showSelectedMeanings() {
         val range = selectionGestureController?.completedSelection() ?: return
         val source = selectedSourceText(range)
@@ -1753,7 +2024,7 @@ class MainActivity : Activity() {
             documentSha256 = currentDocumentSha256,
             startUtf16 = range.startUtf16,
             endUtf16 = range.endUtf16,
-            selectionVersion = selectionVersion,
+            selectionVersion = selectionRequestGate.snapshot(),
         )
         blockExecutor.execute {
             val result = runCatching {
@@ -1761,7 +2032,7 @@ class MainActivity : Activity() {
                 UserMeaningIndex(all).resolve(target.query())
             }
             runOnUiThread {
-                if (isDestroyed || target.selectionVersion != selectionVersion) {
+                if (isDestroyed || !selectionRequestGate.isCurrent(target.selectionVersion)) {
                     Log.i(MEANING_TAG, "stale selection result discarded")
                     return@runOnUiThread
                 }
@@ -1858,7 +2129,7 @@ class MainActivity : Activity() {
                     updatedAtEpochMillis = now,
                 )
                 updateUserMeanings({ it + value }) {
-                    if (target.selectionVersion == selectionVersion) showSelectedMeanings()
+                    if (selectionRequestGate.isCurrent(target.selectionVersion)) showSelectedMeanings()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -1926,7 +2197,7 @@ class MainActivity : Activity() {
                         }
                     }
                 }) {
-                    if (target != null && target.selectionVersion == selectionVersion) {
+                    if (target != null && selectionRequestGate.isCurrent(target.selectionVersion)) {
                         showSelectedMeanings()
                     } else {
                         showVocabulary()
@@ -1944,7 +2215,7 @@ class MainActivity : Activity() {
             .setMessage(getString(R.string.meaning_delete_message, value.sourceText, value.meaning))
             .setPositiveButton(R.string.meaning_delete) { _, _ ->
                 updateUserMeanings({ meanings -> meanings.filterNot { it.id == value.id } }) {
-                    if (target != null && target.selectionVersion == selectionVersion) {
+                    if (target != null && selectionRequestGate.isCurrent(target.selectionVersion)) {
                         showSelectedMeanings()
                     } else {
                         showVocabulary()
@@ -2401,6 +2672,7 @@ class MainActivity : Activity() {
         const val CHAPTER_TAG = "WorldViewerChapter"
         const val SEARCH_TAG = "WorldViewerSearch"
         const val MEANING_TAG = "WorldViewerMeaning"
+        const val ANNOTATION_TAG = "WorldViewerAnnotation"
         const val POSITION_TAG = "WorldViewerPosition"
         const val NAVIGATION_TAG = "WorldViewerNavigation"
         const val BLOCK_SOURCE_TAG = "WorldViewerBlocks"
@@ -2445,4 +2717,10 @@ class MainActivity : Activity() {
     ) {
         fun query() = MeaningQuery(sourceText, documentSha256, startUtf16, endUtf16)
     }
+
+    private data class AnnotationTarget(
+        val documentSha256: String,
+        val range: SelectionRange,
+        val selectedText: String,
+    )
 }
