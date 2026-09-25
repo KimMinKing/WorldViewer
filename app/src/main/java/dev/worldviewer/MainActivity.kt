@@ -31,6 +31,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import dev.worldviewer.backup.WorldViewerRestore
 import dev.worldviewer.reader.AutoBookCover
 import dev.worldviewer.reader.AnnotationType
 import dev.worldviewer.reader.AutomaticChapter
@@ -149,6 +150,9 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (WorldViewerRestore(filesDir).recoverInterruptedRestore()) {
+            Log.w(RESTORE_TAG, "Recovered an interrupted backup restore before loading reader data")
+        }
 
         val horizontalPadding = 20.dp
         rootLayout = LinearLayout(this).apply {
@@ -2667,6 +2671,7 @@ class MainActivity : Activity() {
         const val PINYIN_UI_TAG = "WorldViewerPinyinUI"
         const val EXTRA_SELECTION_DELAY = "selection_delay"
         const val IMPORT_TAG = "WorldViewerImport"
+        const val RESTORE_TAG = "WorldViewerRestore"
         const val CATALOG_TAG = "WorldViewerCatalog"
         const val STYLE_TAG = "WorldViewerStyle"
         const val CHAPTER_TAG = "WorldViewerChapter"
