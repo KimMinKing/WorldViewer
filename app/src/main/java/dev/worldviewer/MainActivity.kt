@@ -26,6 +26,7 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import dev.worldviewer.reader.AutoBookCover
@@ -42,6 +43,8 @@ import dev.worldviewer.reader.ImportProgress
 import dev.worldviewer.reader.ImportProgressPhase
 import dev.worldviewer.reader.IndexedTextBlockSource
 import dev.worldviewer.reader.InMemoryTextBlockSource
+import dev.worldviewer.reader.ManualChapter
+import dev.worldviewer.reader.ManualChapterStore
 import dev.worldviewer.reader.ReaderFixture
 import dev.worldviewer.reader.PinyinDisplayMode
 import dev.worldviewer.reader.ReadingPosition
@@ -70,6 +73,7 @@ import dev.worldviewer.selection.SelectionEdge
 import dev.worldviewer.selection.SelectionRange
 import dev.worldviewer.selection.StringSelectionTextNavigator
 import java.util.concurrent.Executors
+import java.util.UUID
 import java.io.File
 
 class MainActivity : Activity() {
@@ -229,7 +233,7 @@ class MainActivity : Activity() {
             text = getString(R.string.table_of_contents)
             contentDescription = getString(R.string.table_of_contents_description)
             isEnabled = false
-            setOnClickListener { showAutomaticTableOfContents() }
+            setOnClickListener { showTableOfContentsMenu() }
         }
         openTxtButton = Button(this).apply {
             text = getString(R.string.open_txt)
@@ -370,7 +374,8 @@ class MainActivity : Activity() {
                 metadataStore().cleanStalePartials() +
                 readingPositionStore().cleanStalePartials() +
                 bookCatalogStore().cleanStalePartials() +
-                readerStyleStore().cleanStalePartials()
+                readerStyleStore().cleanStalePartials() +
+                manualChapterStore().cleanStalePartials()
             if (removedPartials > 0) {
                 Log.i(IMPORT_TAG, "removedStalePartials=$removedPartials")
             }
@@ -834,6 +839,191 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showTableOfContentsMenu() {
+        val actions = if (currentDocumentSha256 == null) {
+            listOf(getString(R.string.table_of_contents_automatic))
+        } else {
+            listOf(
+                getString(R.string.table_of_contents_automatic),
+                getString(R.string.table_of_contents_manual),
+                getString(R.string.table_of_contents_add_here),
+            )
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.table_of_contents)
+            .setItems(actions.toTypedArray()) { _, which ->
+                when (which) {
+                    0 -> showAutomaticTableOfContents()
+                    1 -> showManualTableOfContents()
+                    2 -> addManualChapterHere()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun addManualChapterHere() {
+        val position = captureReadingPosition()
+        if (position == null) {
+            Toast.makeText(this, R.string.table_of_contents_position_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            hint = getString(R.string.table_of_contents_title_hint)
+        }
+        blockExecutor.execute {
+            val result = runCatching { manualChapterStore().load(position.documentSha256).size + 1 }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onSuccess { number ->
+                    input.setText(getString(R.string.table_of_contents_default_title, number))
+                    input.selectAll()
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.table_of_contents_add_here)
+                        .setView(input)
+                        .setPositiveButton(R.string.table_of_contents_save) { _, _ ->
+                            val title = input.text.toString().trim()
+                            val chapter = ManualChapter(
+                                id = UUID.randomUUID().toString(),
+                                title = title,
+                                utf16Offset = position.utf16Offset,
+                                quoteBefore = position.quoteBefore,
+                                quoteAfter = position.quoteAfter,
+                            )
+                            updateManualChapters(position.documentSha256) { chapters -> chapters + chapter }
+                        }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                }.onFailure(::showManualChapterFailure)
+            }
+        }
+    }
+
+    private fun showManualTableOfContents() {
+        val documentId = currentDocumentSha256 ?: return
+        tableOfContentsButton.isEnabled = false
+        blockExecutor.execute {
+            val result = runCatching { manualChapterStore().load(documentId) }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                tableOfContentsButton.isEnabled = documentUtf16Length > 0
+                result.onSuccess(::showManualTableOfContentsDialog)
+                    .onFailure(::showManualChapterFailure)
+            }
+        }
+    }
+
+    private fun showManualTableOfContentsDialog(chapters: List<ManualChapter>) {
+        if (chapters.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.table_of_contents_manual)
+                .setMessage(R.string.table_of_contents_manual_empty)
+                .setPositiveButton(R.string.table_of_contents_add_here) { _, _ -> addManualChapterHere() }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+            return
+        }
+        val labels = chapters.map { chapter ->
+            val progress = ReadingProgress.fromOffset(chapter.utf16Offset, documentUtf16Length) / 10.0
+            getString(R.string.table_of_contents_item, chapter.title, progress)
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.table_of_contents_manual)
+            .setItems(labels) { _, which ->
+                chapters.getOrNull(which)?.let(::showManualChapterActions)
+            }
+            .setPositiveButton(R.string.table_of_contents_add_here) { _, _ -> addManualChapterHere() }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showManualChapterActions(chapter: ManualChapter) {
+        AlertDialog.Builder(this)
+            .setTitle(chapter.title)
+            .setMessage(
+                getString(
+                    R.string.table_of_contents_manual_position,
+                    ReadingProgress.fromOffset(chapter.utf16Offset, documentUtf16Length) / 10.0,
+                ),
+            )
+            .setPositiveButton(R.string.table_of_contents_go) { _, _ ->
+                val origin = captureReaderAnchor() ?: return@setPositiveButton
+                navigateToUtf16(chapter.utf16Offset, origin, reader.paddingTop + 1)
+                Log.i(CHAPTER_TAG, "manual navigate id=${chapter.id} utf16=${chapter.utf16Offset}")
+            }
+            .setNeutralButton(R.string.table_of_contents_edit) { _, _ -> editManualChapter(chapter) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun editManualChapter(chapter: ManualChapter) {
+        val documentId = currentDocumentSha256 ?: return
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            setText(chapter.title)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.table_of_contents_edit)
+            .setView(input)
+            .setPositiveButton(R.string.table_of_contents_save) { _, _ ->
+                val title = input.text.toString().trim()
+                updateManualChapters(documentId) { chapters ->
+                    chapters.map { saved -> if (saved.id == chapter.id) saved.copy(title = title) else saved }
+                }
+            }
+            .setNeutralButton(R.string.table_of_contents_delete) { _, _ ->
+                confirmDeleteManualChapter(documentId, chapter)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun confirmDeleteManualChapter(documentId: String, chapter: ManualChapter) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.table_of_contents_delete)
+            .setMessage(getString(R.string.table_of_contents_delete_message, chapter.title))
+            .setPositiveButton(R.string.table_of_contents_delete) { _, _ ->
+                updateManualChapters(documentId) { chapters ->
+                    chapters.filterNot { saved -> saved.id == chapter.id }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun updateManualChapters(
+        documentId: String,
+        transform: (List<ManualChapter>) -> List<ManualChapter>,
+    ) {
+        tableOfContentsButton.isEnabled = false
+        blockExecutor.execute {
+            val result = runCatching {
+                val store = manualChapterStore()
+                val updated = transform(store.load(documentId))
+                store.save(documentId, updated)
+                updated
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                tableOfContentsButton.isEnabled = documentUtf16Length > 0
+                result.onSuccess {
+                    Toast.makeText(this, R.string.table_of_contents_saved, Toast.LENGTH_SHORT).show()
+                }.onFailure(::showManualChapterFailure)
+            }
+        }
+    }
+
+    private fun showManualChapterFailure(error: Throwable) {
+        Log.e(CHAPTER_TAG, "manual table of contents failed", error)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.table_of_contents_manual_failed)
+            .setMessage(error.message ?: getString(R.string.unknown_error))
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
     private fun showAutomaticTableOfContentsDialog(chapters: List<AutomaticChapter>) {
         if (chapters.isEmpty()) {
             AlertDialog.Builder(this)
@@ -1270,6 +1460,8 @@ class MainActivity : Activity() {
     private fun bookCatalogStore(): BookCatalogStore = BookCatalogStore(File(filesDir, "library"))
 
     private fun readerStyleStore(): ReaderStyleStore = ReaderStyleStore(File(filesDir, "reader-styles"))
+
+    private fun manualChapterStore(): ManualChapterStore = ManualChapterStore(File(filesDir, "manual-chapters"))
 
     private fun readingPositionStore(): ReadingPositionStore =
         ReadingPositionStore(File(filesDir, "reading-positions"))
