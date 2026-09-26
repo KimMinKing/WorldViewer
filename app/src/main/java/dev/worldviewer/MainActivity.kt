@@ -2576,6 +2576,10 @@ class MainActivity : Activity() {
         ) { request, result ->
             dictionaryProgressDialog?.dismiss()
             dictionaryProgressDialog = null
+            if (dictionaryProvider === provider) {
+                provider.close()
+                dictionaryProvider = null
+            }
             if (isDestroyed || !selectionRequestGate.isCurrent(request.selectionVersion)) {
                 Log.i(MEANING_TAG, "stale dictionary result discarded")
                 return@DictionaryLookupCoordinator
