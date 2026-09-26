@@ -89,6 +89,8 @@
     <string name="vocabulary_item">%1$s · %2$s\n%3$s</string>
     <string name="reader_tools">도구</string>
     <string name="reader_tools_description">단어장, 책갈피와 주석 도구</string>
+    <string name="reader_controls_show">독서 도구 열기</string>
+    <string name="reader_controls_hide">독서 도구 숨기기</string>
     <string name="backup_restore">백업·복원</string>
     <string name="backup_create">백업 파일 만들기</string>
     <string name="restore_open">백업 파일 복원</string>

@@ -19,12 +19,15 @@ import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
 import android.util.Log
 import android.view.Gravity
+import android.view.GestureDetector
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
 import android.widget.ArrayAdapter
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.RadioButton
@@ -107,7 +110,9 @@ class MainActivity : Activity() {
     private val pinyinExecutor = Executors.newSingleThreadExecutor()
     private val positionExecutor = Executors.newSingleThreadExecutor()
     private val backupExecutor = Executors.newSingleThreadExecutor()
-    private lateinit var rootLayout: LinearLayout
+    private lateinit var rootLayout: FrameLayout
+    private lateinit var readerChrome: LinearLayout
+    private lateinit var selectionControls: LinearLayout
     private lateinit var reader: RecyclerView
     private lateinit var readerLayoutManager: LinearLayoutManager
     private lateinit var statusView: TextView
@@ -144,6 +149,7 @@ class MainActivity : Activity() {
     private var backupOperationDialog: AlertDialog? = null
     private var backupOperationInProgress = false
     private var restoreInProgress = false
+    private var readerChromeVisible = false
     private val selectionRequestGate = SelectionRequestGate()
 
     private val pinyinScrollListener = object : RecyclerView.OnScrollListener() {
@@ -153,6 +159,9 @@ class MainActivity : Activity() {
         }
 
         override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+            if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
+                setReaderChromeVisible(false)
+            }
             if (newState != RecyclerView.SCROLL_STATE_IDLE) return
             updateReadingProgress()
             requestVisiblePinyin()
@@ -170,11 +179,15 @@ class MainActivity : Activity() {
         }
 
         val horizontalPadding = 20.dp
-        rootLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        rootLayout = FrameLayout(this).apply {
             setBackgroundColor(Color.rgb(250, 248, 243))
         }
         val root = rootLayout
+        readerChromeVisible = savedInstanceState?.getBoolean(STATE_READER_CHROME_VISIBLE, false) ?: false
+        readerChrome = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (readerChromeVisible) View.VISIBLE else View.GONE
+        }
         statusView = TextView(this).apply {
             setTextColor(Color.rgb(47, 93, 80))
             textSize = 14f
@@ -182,7 +195,7 @@ class MainActivity : Activity() {
             setPadding(horizontalPadding, 12.dp, horizontalPadding, 12.dp)
             text = getString(R.string.reader_loading, BuildConfig.VERSION_NAME)
         }
-        val selectionControls = LinearLayout(this).apply {
+        selectionControls = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
@@ -214,16 +227,16 @@ class MainActivity : Activity() {
             )
             selectionButtonCount += 1
         }
-        selectionButton("시작←", "선택 시작을 한 글자 앞쪽으로 확장") {
+        selectionButton("앞으로 늘리기", "선택 시작을 한 글자 앞쪽으로 확장") {
             selectionGestureController?.adjust(SelectionEdge.START, -1)
         }
-        selectionButton("시작→", "선택 시작을 한 글자 뒤쪽으로 축소") {
+        selectionButton("앞에서 줄이기", "선택 시작을 한 글자 뒤쪽으로 축소") {
             selectionGestureController?.adjust(SelectionEdge.START, 1)
         }
-        selectionButton("끝←", "선택 끝을 한 글자 앞쪽으로 축소") {
+        selectionButton("뒤에서 줄이기", "선택 끝을 한 글자 앞쪽으로 축소") {
             selectionGestureController?.adjust(SelectionEdge.END, -1)
         }
-        selectionButton("끝→", "선택 끝을 한 글자 뒤쪽으로 확장") {
+        selectionButton("뒤로 늘리기", "선택 끝을 한 글자 뒤쪽으로 확장") {
             selectionGestureController?.adjust(SelectionEdge.END, 1)
         }
         selectionButton("뜻", "선택한 원문의 저장된 뜻 보기") {
@@ -232,7 +245,7 @@ class MainActivity : Activity() {
         selectionButton("주석", "선택한 원문에 강조 또는 메모 추가") {
             showSelectionAnnotationMenu()
         }
-        selectionButton("발음", "선택한 첫 글자의 임시 병음 수정") {
+        selectionButton("병음 수정", "선택한 첫 글자의 임시 병음 수정") {
             editSelectedPinyin()
         }
         selectionButton("취소", "선택 취소") {
@@ -271,9 +284,59 @@ class MainActivity : Activity() {
             layoutManager = readerLayoutManager
             setHasFixedSize(false)
             itemAnimator = null
-        }
+            isClickable = true
+            setOnClickListener { handleReaderChromeClick() }
+            accessibilityDelegate = object : View.AccessibilityDelegate() {
+                override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+                    super.onInitializeAccessibilityNodeInfo(host, info)
+                    info.isClickable = true
+                    info.addAction(
+                        AccessibilityNodeInfo.AccessibilityAction(
+                            AccessibilityNodeInfo.ACTION_CLICK,
+                            getString(
+                                if (readerChromeVisible) {
+                                    R.string.reader_controls_hide
+                                } else {
+                                    R.string.reader_controls_show
+                                },
+                            ),
+                        ),
+                    )
+                }
 
-        root.addView(statusView, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
+                    if (action == AccessibilityNodeInfo.ACTION_CLICK) {
+                        return host.performClick()
+                    }
+                    return super.performAccessibilityAction(host, action, args)
+                }
+            }
+        }
+        val readerTapDetector = GestureDetector(
+            this,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(event: android.view.MotionEvent): Boolean = true
+
+                override fun onSingleTapConfirmed(event: android.view.MotionEvent): Boolean {
+                    val centerStart = reader.width / 3f
+                    val centerEnd = reader.width * 2f / 3f
+                    if (event.x !in centerStart..centerEnd) return false
+                    return reader.performClick()
+                }
+            },
+        )
+        reader.addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
+            override fun onInterceptTouchEvent(recyclerView: RecyclerView, event: android.view.MotionEvent): Boolean {
+                readerTapDetector.onTouchEvent(event)
+                return false
+            }
+        })
+
+        readerChrome.addView(
+            statusView,
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        )
         val fileControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
@@ -330,7 +393,7 @@ class MainActivity : Activity() {
             cancelImportButton,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
-        root.addView(fileControls, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        readerChrome.addView(fileControls, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         val pinyinControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
@@ -370,7 +433,7 @@ class MainActivity : Activity() {
             },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
-        root.addView(pinyinControls, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        readerChrome.addView(pinyinControls, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         val navigationControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -436,12 +499,33 @@ class MainActivity : Activity() {
             previousLocationButton,
             LinearLayout.LayoutParams(132.dp, LinearLayout.LayoutParams.WRAP_CONTENT),
         )
-        root.addView(navigationControls, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        root.addView(reader, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        root.addView(
-            selectionControls,
+        readerChrome.addView(
+            navigationControls,
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
+        )
+        root.addView(
+            reader,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        root.addView(
+            readerChrome,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP,
+            ),
+        )
+        root.addView(
+            selectionControls,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM,
+            ),
         )
         root.setOnApplyWindowInsetsListener { view, insets ->
             val bars = insets.systemBarInsets()
@@ -591,6 +675,7 @@ class MainActivity : Activity() {
                         onSelectionChanged = { range ->
                             selectionRequestGate.selectionChanged()
                             selectionControls.visibility = if (range == null) View.GONE else View.VISIBLE
+                            if (range != null) setReaderChromeVisible(false)
                         },
                         onSelectionCompleted = { range ->
                             preserveReaderAnchor { adapter.setCompletedPinyinSelection(range) }
@@ -676,6 +761,31 @@ class MainActivity : Activity() {
                 }
                 refreshHighlights()
             }
+        }
+    }
+
+    private fun handleReaderChromeClick() {
+        if (::selectionControls.isInitialized && selectionControls.visibility == View.VISIBLE) {
+            val controller = selectionGestureController
+            if (controller != null) {
+                controller.cancelSelection()
+            } else {
+                textBlockAdapter?.setSelection(null)
+                selectionControls.visibility = View.GONE
+            }
+            return
+        }
+        setReaderChromeVisible(!readerChromeVisible)
+    }
+
+    private fun setReaderChromeVisible(visible: Boolean) {
+        if (!::readerChrome.isInitialized || readerChromeVisible == visible) return
+        readerChromeVisible = visible
+        readerChrome.visibility = if (visible) View.VISIBLE else View.GONE
+        if (::reader.isInitialized) {
+            reader.sendAccessibilityEvent(
+                android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            )
         }
     }
 
@@ -1752,6 +1862,8 @@ class MainActivity : Activity() {
         val button = if (dark) Color.rgb(52, 56, 53) else Color.rgb(230, 226, 217)
         rootLayout.setBackgroundColor(background)
         reader.setBackgroundColor(background)
+        readerChrome.setBackgroundColor(background)
+        selectionControls.setBackgroundColor(background)
         statusView.setTextColor(accent)
         readingProgressView.setTextColor(accent)
         applyControlTheme(rootLayout, text, button)
@@ -2885,6 +2997,7 @@ class MainActivity : Activity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(STATE_READER_CHROME_VISIBLE, readerChromeVisible)
         if (::reader.isInitialized && ::readerLayoutManager.isInitialized) {
             val position = readerLayoutManager.findFirstVisibleItemPosition()
             if (position != RecyclerView.NO_POSITION) {
@@ -2985,6 +3098,7 @@ class MainActivity : Activity() {
         const val REQUEST_CREATE_BACKUP = 1002
         const val REQUEST_OPEN_BACKUP = 1003
         const val STATE_FIRST_VISIBLE_POSITION = "reader.firstVisiblePosition"
+        const val STATE_READER_CHROME_VISIBLE = "reader.chromeVisible"
         const val STATE_FIRST_VISIBLE_OFFSET = "reader.firstVisibleOffset"
         const val STATE_READER_WIDTH = "reader.width"
         const val STATE_READER_ANCHOR_UTF16 = "reader.anchorUtf16"
