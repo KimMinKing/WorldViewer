@@ -27,6 +27,7 @@ debug APK는 `app/build/outputs/apk/debug/app-debug.apk`에 생성된다. ADB에
 ```powershell
 .\gradlew.bat assembleBenchmark
 .\tools\generate-reader-benchmark-fixture.ps1 -OutputPath app\build\tmp\reader-50mib.txt -SizeMiB 50
+.\tools\generate-reader-benchmark-fixture.ps1 -OutputPath app\build\tmp\reader-base64-50mib.txt -SizeMiB 50 -ContentProfile DeterministicBase64
 ```
 
 저장 실패 회귀용 `test-document-provider` 모듈도 제품 앱과 별도 APK로 빌드된다. 에뮬레이터의 시스템 파일 선택기에 읽기 전용 목적지와 64KiB 뒤 쓰기를 끊는 목적지를 추가하며, 수동 검증 후 제거한다. 제품 APK에는 포함되지 않는다.
