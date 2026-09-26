@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "worldviewer"
 include(":app")
+include(":test-document-provider")

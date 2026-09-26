@@ -55,7 +55,7 @@
 ## 검증 규칙
 
 - 기본 검증은 `./gradlew assembleDebug test lint`이며 Windows PowerShell에서는 `.\gradlew.bat assembleDebug test lint`를 사용한다.
-- 실제 기기 설치는 ADB 연결을 확인한 뒤 `.\gradlew.bat installDebug`로 수행한다.
+- 실제 기기 설치는 ADB 연결을 확인한 뒤 `.\gradlew.bat :app:installDebug`로 수행한다. 루트에는 별도 시험용 Android 앱 모듈도 있으므로 제품 앱 모듈을 명시한다.
 - 테스트 작업이 `NO-SOURCE`이면 테스트가 존재하거나 통과했다고 표현하지 않는다.
 - 성능은 debug 빌드의 체감만으로 결론 내리지 않는다. 가능한 경우 release에 가까운 빌드와 기록된 기준 기기에서 측정한다.
 - TXT 가져오기는 중국어, 희귀 한자, 혼합 언어, 긴 단일 문단과 잘못된 인코딩 후보를 포함해 확인한다.

@@ -19,7 +19,7 @@ JDK 17 이상과 Android SDK API 36이 필요하다. 로컬 SDK 경로는 Git에
 debug APK는 `app/build/outputs/apk/debug/app-debug.apk`에 생성된다. ADB에 실제 기기가 `device` 상태로 연결되면 다음 명령으로 설치한다.
 
 ```powershell
-.\gradlew.bat installDebug
+.\gradlew.bat :app:installDebug
 ```
 
 성능 회귀에는 release 설정을 상속하지만 별도 앱 ID와 debug 서명을 쓰는 비디버그 가능 `benchmark` 변형을 사용한다. 배포 산출물이 아니다.
@@ -28,5 +28,13 @@ debug APK는 `app/build/outputs/apk/debug/app-debug.apk`에 생성된다. ADB에
 .\gradlew.bat assembleBenchmark
 .\tools\generate-reader-benchmark-fixture.ps1 -OutputPath app\build\tmp\reader-50mib.txt -SizeMiB 50
 ```
+
+저장 실패 회귀용 `test-document-provider` 모듈도 제품 앱과 별도 APK로 빌드된다. 에뮬레이터의 시스템 파일 선택기에 읽기 전용 목적지와 64KiB 뒤 쓰기를 끊는 목적지를 추가하며, 수동 검증 후 제거한다. 제품 APK에는 포함되지 않는다.
+
+```powershell
+.\gradlew.bat :test-document-provider:assembleDebug
+```
+
+시험 APK에는 `android:testOnly=true`가 지정되어 있다. 필요할 때만 `adb install -t test-document-provider\build\outputs\apk\debug\test-document-provider-debug.apk`로 설치한다.
 
 현재 build·test·lint, API 36 에뮬레이터와 Galaxy Z Flip4(Android 16/API 36)의 설치·실행, 블록 렌더링·선택·오프라인 병음 배치를 확인했다. 기준 기기는 USB ADB 호환 문제로 무선 디버깅을 사용한다. 측정값과 다음 작업은 [docs/STATUS.md](docs/STATUS.md)에 기록한다.
