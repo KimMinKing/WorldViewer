@@ -8,7 +8,7 @@
 - 단계: 12 — v1 배포 준비
 - 상태: 진행 중
 - 완료한 작업: 단계 11 종료, 단계 12의 저장 형식 호환성, 에뮬레이터 접근성·태블릿 크기·문서 공급자 실패 처리, release 유사 benchmark 기준선, 50MiB 백업 왕복, 로컬 배포 요건과 산출물 점검
-- 현재 작업: Galaxy Z Flip4의 release 유사 benchmark·TalkBack 수동 회귀 대기
+- 현재 작업: Galaxy Z Flip4에 별도 benchmark APK·50MiB fixture 준비 완료; 잠금 해제 뒤 가져오기·성능·TalkBack 수동 회귀 대기
 - 실제 휴대폰에서는 무선 ADB로 설치·실행했다. USB ADB는 인증 전송 오류로 `offline` 상태가 반복된다.
 
 ## 확인한 사실
@@ -94,6 +94,15 @@ ADB는 PATH에 없어 다음과 같이 SDK 내부 경로로 확인했다.
 - 청사진 파일의 실제 경로와 요청 경로가 다르다. 원본 보존을 위해 현재는 루트 파일을 기준 문서로 연결했다.
 
 ## 최근 작업 기록
+
+### 2026-09-26 — Galaxy Z Flip4 benchmark 검증 준비
+
+- 상태: 검증 대기 — 별도 패키지와 입력 준비·잠금 화면 뒤 기동 확인 완료, 실제 화면 조작 대기
+- 변경: 앱 코드는 바꾸지 않았다. Galaxy Z Flip4에 비디버그 가능 `dev.worldviewer.benchmark`를 새로 설치하고 Downloads에 50MiB 반복 중국어 fixture를 배치했다. 기존 `dev.worldviewer` 패키지와 데이터는 건드리지 않았다.
+- 검증: benchmark APK는 versionCode 1·versionName `0.1.0-dev-benchmark`이고 package flags에 `DEBUGGABLE`이 없다. fixture는 52,428,800바이트·SHA-256 `f94f99a8db19ff79ddebd1b4762acb8de9ebdca193e8b341223d6769ffcad696`으로 에뮬레이터 기준 입력과 같다. 화면이 잠긴 채 콜드 시작은 1,220ms, 내장 fixture 128블록·UTF-16 97,902자의 준비는 4,105ms였고 crash 기록은 없었다. 확인 뒤 앱을 강제 종료했으며 화면은 계속 꺼진 잠금 상태다.
+- 기기 확인: Galaxy Z Flip4 `SM-F721N`, Android 16/API 36, One UI 8.0. 배터리 80%, 공유 저장소 여유 약 246.8GiB. 잠금 때문에 50MiB 가져오기와 화면 결과는 확인하지 않았다.
+- 미해결 문제: 사용자가 잠금을 해제해야 시스템 파일 선택기, 스크롤, 전체 병음, TalkBack 음성·두 손가락 탐색과 주관적 피로도를 검증할 수 있다. 시험이 끝나면 benchmark 패키지와 Downloads fixture를 제거한다.
+- 다음 작업: 휴대폰 잠금 해제 뒤 준비된 fixture를 benchmark 앱으로 가져오고 에뮬레이터와 같은 성능 절차를 실행한다.
 
 ### 2026-09-26 — 낮은 압축률 50MiB 원문 백업 측정
 
