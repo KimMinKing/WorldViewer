@@ -177,7 +177,7 @@ class DictionaryLookupCoordinatorTest {
         queryText = query,
         entries = emptyList(),
         resultType = LookupResultType.REVERSE_DICTIONARY,
-        attribution = LookupAttribution("테스트 공급원"),
+        attributions = listOf(LookupAttribution("테스트 공급원")),
         storagePolicy = LookupStoragePolicy(LookupRetention.DO_NOT_STORE),
     )
 

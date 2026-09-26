@@ -28,11 +28,13 @@ import android.widget.Button
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.SeekBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -42,6 +44,12 @@ import dev.worldviewer.backup.RestoreConflictPolicy
 import dev.worldviewer.backup.RestorePreview
 import dev.worldviewer.backup.WorldViewerBackup
 import dev.worldviewer.backup.WorldViewerRestore
+import dev.worldviewer.lookup.DictionaryLookupCoordinator
+import dev.worldviewer.lookup.DictionaryLookupRequest
+import dev.worldviewer.lookup.DictionaryLookupResponse
+import dev.worldviewer.lookup.LookupResultType
+import dev.worldviewer.lookup.OfflineKoreanDictionaryProvider
+import dev.worldviewer.lookup.CcCedictLookupProvider
 import dev.worldviewer.reader.AutoBookCover
 import dev.worldviewer.reader.AnnotationType
 import dev.worldviewer.reader.AutomaticChapter
@@ -110,6 +118,7 @@ class MainActivity : Activity() {
     private val pinyinExecutor = Executors.newSingleThreadExecutor()
     private val positionExecutor = Executors.newSingleThreadExecutor()
     private val backupExecutor = Executors.newSingleThreadExecutor()
+    private val dictionaryExecutor = Executors.newSingleThreadExecutor()
     private lateinit var rootLayout: FrameLayout
     private lateinit var readerChrome: LinearLayout
     private lateinit var selectionControls: LinearLayout
@@ -150,6 +159,9 @@ class MainActivity : Activity() {
     private var backupOperationInProgress = false
     private var restoreInProgress = false
     private var readerChromeVisible = false
+    private var dictionaryLookupCoordinator: DictionaryLookupCoordinator? = null
+    private var dictionaryProvider: OfflineKoreanDictionaryProvider? = null
+    private var dictionaryProgressDialog: AlertDialog? = null
     private val selectionRequestGate = SelectionRequestGate()
 
     private val pinyinScrollListener = object : RecyclerView.OnScrollListener() {
@@ -239,7 +251,7 @@ class MainActivity : Activity() {
         selectionButton("뒤로 늘리기", "선택 끝을 한 글자 뒤쪽으로 확장") {
             selectionGestureController?.adjust(SelectionEdge.END, 1)
         }
-        selectionButton("뜻", "선택한 원문의 저장된 뜻 보기") {
+        selectionButton("뜻", "선택한 원문의 저장된 뜻과 사전 보기") {
             showSelectedMeanings()
         }
         selectionButton("주석", "선택한 원문에 강조 또는 메모 추가") {
@@ -674,6 +686,7 @@ class MainActivity : Activity() {
                         confirmationDelayMillis = delay.toLong(),
                         onSelectionChanged = { range ->
                             selectionRequestGate.selectionChanged()
+                            cancelDictionaryLookup()
                             selectionControls.visibility = if (range == null) View.GONE else View.VISIBLE
                             if (range != null) setReaderChromeVisible(false)
                         },
@@ -2479,7 +2492,13 @@ class MainActivity : Activity() {
                     Log.i(MEANING_TAG, "stale selection result discarded")
                     return@runOnUiThread
                 }
-                result.onSuccess { meanings -> showMeaningDialog(target, meanings) }
+                result.onSuccess { meanings ->
+                    if (meanings.isEmpty()) {
+                        startDictionaryLookup(target)
+                    } else {
+                        showMeaningDialog(target, meanings)
+                    }
+                }
                     .onFailure(::showMeaningFailure)
             }
         }
@@ -2502,19 +2521,189 @@ class MainActivity : Activity() {
     private fun showMeaningDialog(target: MeaningTarget, meanings: List<UserMeaning>) {
         val builder = AlertDialog.Builder(this)
             .setTitle(getString(R.string.meaning_title, target.sourceText))
-            .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
-            .setNeutralButton(R.string.vocabulary) { _, _ -> showVocabulary() }
+            .setPositiveButton(R.string.dictionary_lookup) { _, _ -> startDictionaryLookup(target) }
+            .setNeutralButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
             .setNegativeButton(android.R.string.cancel, null)
-        if (meanings.isEmpty()) {
-            builder.setMessage(R.string.meaning_empty)
-        } else {
-            builder.setItems(meanings.map { value ->
-                getString(R.string.meaning_item, meaningScopeLabel(value.scope), value.meaning)
-            }.toTypedArray()) { _, which ->
-                meanings.getOrNull(which)?.let { editUserMeaning(it, target) }
-            }
+        builder.setItems(meanings.map { value ->
+            getString(R.string.meaning_item, meaningScopeLabel(value.scope), value.meaning)
+        }.toTypedArray()) { _, which ->
+            meanings.getOrNull(which)?.let { editUserMeaning(it, target) }
         }
         builder.show()
+    }
+
+    private fun startDictionaryLookup(target: MeaningTarget) {
+        val preferences = getSharedPreferences(DICTIONARY_PREFERENCES, MODE_PRIVATE)
+        when (preferences.getString(DICTIONARY_DOWNLOAD_POLICY, null)) {
+            DICTIONARY_POLICY_WIFI -> requestDictionaryLookup(target, wifiOnly = true)
+            DICTIONARY_POLICY_ANY_NETWORK -> requestDictionaryLookup(target, wifiOnly = false)
+            else -> showDictionaryModelConsent(target)
+        }
+    }
+
+    private fun showDictionaryModelConsent(target: MeaningTarget) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.dictionary_model_title)
+            .setMessage(R.string.dictionary_model_message)
+            .setPositiveButton(R.string.dictionary_model_wifi) { _, _ ->
+                saveDictionaryDownloadPolicy(DICTIONARY_POLICY_WIFI)
+                requestDictionaryLookup(target, wifiOnly = true)
+            }
+            .setNeutralButton(R.string.dictionary_model_any_network) { _, _ ->
+                saveDictionaryDownloadPolicy(DICTIONARY_POLICY_ANY_NETWORK)
+                requestDictionaryLookup(target, wifiOnly = false)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun saveDictionaryDownloadPolicy(policy: String) {
+        getSharedPreferences(DICTIONARY_PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putString(DICTIONARY_DOWNLOAD_POLICY, policy)
+            .apply()
+    }
+
+    private fun requestDictionaryLookup(target: MeaningTarget, wifiOnly: Boolean) {
+        cancelDictionaryLookup()
+        val provider = dictionaryProvider ?: OfflineKoreanDictionaryProvider(
+            CcCedictLookupProvider(applicationContext),
+            wifiOnly,
+        ).also { dictionaryProvider = it }
+        val coordinator = DictionaryLookupCoordinator(
+            worker = dictionaryExecutor,
+            deliver = { action -> runOnUiThread(action) },
+        ) { request, result ->
+            dictionaryProgressDialog?.dismiss()
+            dictionaryProgressDialog = null
+            if (isDestroyed || !selectionRequestGate.isCurrent(request.selectionVersion)) {
+                Log.i(MEANING_TAG, "stale dictionary result discarded")
+                return@DictionaryLookupCoordinator
+            }
+            val resultTarget = MeaningTarget(
+                sourceText = request.sourceText,
+                documentSha256 = request.documentId,
+                startUtf16 = checkNotNull(request.rangeStartUtf16),
+                endUtf16 = checkNotNull(request.rangeEndUtf16),
+                selectionVersion = request.selectionVersion,
+            )
+            result.onSuccess { response -> showDictionaryResult(resultTarget, response) }
+                .onFailure { error -> showDictionaryFailure(resultTarget, error) }
+        }
+        dictionaryLookupCoordinator = coordinator
+        dictionaryProgressDialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
+            .setMessage(R.string.dictionary_lookup_progress)
+            .setNegativeButton(R.string.dictionary_lookup_cancel) { _, _ -> cancelDictionaryLookup() }
+            .setOnCancelListener { cancelDictionaryLookup() }
+            .show()
+        coordinator.request(
+            DictionaryLookupRequest(
+                sourceText = target.sourceText,
+                documentId = target.documentSha256,
+                documentVersion = target.documentSha256,
+                rangeStartUtf16 = target.startUtf16,
+                rangeEndUtf16 = target.endUtf16,
+                selectionVersion = target.selectionVersion,
+            ),
+            provider,
+        )
+    }
+
+    private fun showDictionaryResult(target: MeaningTarget, response: DictionaryLookupResponse) {
+        if (response.entries.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
+                .setMessage(R.string.dictionary_no_result)
+                .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+            return
+        }
+        val padding = 24.dp
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, 8.dp, padding, 8.dp)
+        }
+        response.entries.forEachIndexed { entryIndex, entry ->
+            content.addView(TextView(this).apply {
+                textSize = 16f
+                setTextColor(
+                    if (currentReaderStyle.theme == ReaderTheme.DARK) {
+                        Color.rgb(236, 232, 222)
+                    } else {
+                        Color.rgb(35, 33, 29)
+                    },
+                )
+                text = buildString {
+                    if (entryIndex > 0) append("\n")
+                    append(entry.headword)
+                    entry.reading?.let { append("  ").append(it) }
+                    entry.meanings.forEachIndexed { meaningIndex, meaning ->
+                        append("\n").append(meaningIndex + 1).append(". ").append(meaning)
+                        entry.sourceMeanings.getOrNull(meaningIndex)?.let { source ->
+                            append("\n   ").append(source)
+                        }
+                    }
+                }
+            })
+        }
+        content.addView(TextView(this).apply {
+            setPadding(0, 16.dp, 0, 8.dp)
+            text = getString(R.string.dictionary_cc_cedict_attribution)
+            contentDescription = getString(R.string.dictionary_cc_cedict_attribution_description)
+            setOnClickListener { openWebPage(CC_CEDICT_URL) }
+        })
+        if (response.resultType == LookupResultType.TRANSLATED_DICTIONARY) {
+            content.addView(ImageView(this).apply {
+                setImageResource(R.drawable.powered_by_google_translate)
+                adjustViewBounds = true
+                contentDescription = getString(R.string.dictionary_google_attribution)
+                setOnClickListener { openWebPage(GOOGLE_TRANSLATE_URL) }
+            }, LinearLayout.LayoutParams(176.dp, 16.dp).apply {
+                topMargin = 8.dp
+            })
+            content.addView(TextView(this).apply {
+                setPadding(0, 8.dp, 0, 0)
+                textSize = 12f
+                text = getString(R.string.dictionary_machine_translation_notice)
+            })
+        }
+        val scroll = ScrollView(this).apply { addView(content) }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
+            .setView(scroll)
+            .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showDictionaryFailure(target: MeaningTarget, error: Throwable) {
+        Log.e(MEANING_TAG, "dictionary lookup failed", error)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.dictionary_lookup_failed)
+            .setMessage(getString(R.string.dictionary_lookup_failed_message, error.cause?.message ?: error.message ?: getString(R.string.unknown_error)))
+            .setPositiveButton(R.string.dictionary_retry_any_network) { _, _ ->
+                saveDictionaryDownloadPolicy(DICTIONARY_POLICY_ANY_NETWORK)
+                dictionaryProvider?.close()
+                dictionaryProvider = null
+                requestDictionaryLookup(target, wifiOnly = false)
+            }
+            .setNeutralButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun cancelDictionaryLookup() {
+        dictionaryLookupCoordinator?.cancel()
+        dictionaryLookupCoordinator = null
+        dictionaryProgressDialog?.dismiss()
+        dictionaryProgressDialog = null
+    }
+
+    private fun openWebPage(url: String) {
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            .onFailure { Toast.makeText(this, url, Toast.LENGTH_LONG).show() }
     }
 
     private fun showAddMeaning(target: MeaningTarget) {
@@ -3037,6 +3226,9 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        cancelDictionaryLookup()
+        dictionaryProvider?.close()
+        dictionaryProvider = null
         cancelActiveSearch()
         activeImportCancellation?.cancel()
         activeImportCancellation = null
@@ -3054,6 +3246,7 @@ class MainActivity : Activity() {
         pinyinExecutor.shutdownNow()
         positionExecutor.shutdown()
         backupExecutor.shutdown()
+        dictionaryExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -3142,6 +3335,12 @@ class MainActivity : Activity() {
         const val STYLE_FONT_MAX = 30
         const val STYLE_LINE_MIN = 100
         const val STYLE_LINE_MAX = 180
+        const val DICTIONARY_PREFERENCES = "dictionary"
+        const val DICTIONARY_DOWNLOAD_POLICY = "model_download_policy"
+        const val DICTIONARY_POLICY_WIFI = "wifi"
+        const val DICTIONARY_POLICY_ANY_NETWORK = "any_network"
+        const val CC_CEDICT_URL = "https://www.mdbg.net/chinese/dictionary?page=cc-cedict"
+        const val GOOGLE_TRANSLATE_URL = "https://translate.google.com/"
         val SELECTION_DELAYS = setOf(250, 350, 450)
         val STORED_NAME = Regex("[0-9a-f]{64}\\.original")
     }

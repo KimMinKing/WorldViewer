@@ -1,5 +1,6 @@
 package dev.worldviewer.reader
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -8,6 +9,8 @@ import dev.worldviewer.pinyin.PinyinReading
 import dev.worldviewer.selection.SelectionRange
 
 /** Draws ruby after the source layout is complete, so pinyin never changes source line breaks. */
+// AppCompat is an incidental ML Kit dependency; changing this view would invalidate renderer measurements.
+@SuppressLint("AppCompatCustomView")
 class PinyinTextView(context: Context) : TextView(context) {
     private val rubyPaint = Paint()
     private var blockStartUtf16 = 0

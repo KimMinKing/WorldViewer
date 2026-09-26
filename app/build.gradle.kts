@@ -47,6 +47,7 @@ kotlin {
 
 dependencies {
     implementation("androidx.recyclerview:recyclerview:1.4.0")
+    implementation("com.google.mlkit:translate:17.0.3")
     testImplementation("junit:junit:4.13.2")
     // Evaluation-only candidate. It is not packaged in the Android app.
     testImplementation("com.github.houbb:pinyin:0.4.0")

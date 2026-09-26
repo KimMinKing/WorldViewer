@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicLong
 enum class LookupResultType {
     USER_DEFINED,
     REVERSE_DICTIONARY,
+    TRANSLATED_DICTIONARY,
     TRANSLATION,
 }
 
@@ -67,6 +68,7 @@ data class DictionaryLookupRequest(
 data class DictionaryLookupEntry(
     val headword: String,
     val meanings: List<String>,
+    val sourceMeanings: List<String> = emptyList(),
     val partOfSpeech: String? = null,
     val reading: String? = null,
 ) {
@@ -74,6 +76,9 @@ data class DictionaryLookupEntry(
         require(headword.isNotBlank()) { "표제어가 필요합니다." }
         require(meanings.isNotEmpty() && meanings.all(String::isNotBlank)) {
             "뜻풀이에는 비어 있지 않은 뜻이 하나 이상 필요합니다."
+        }
+        require(sourceMeanings.isEmpty() || sourceMeanings.size == meanings.size) {
+            "원문 뜻풀이가 있으면 번역 뜻풀이와 수가 같아야 합니다."
         }
     }
 }
@@ -84,13 +89,14 @@ data class DictionaryLookupResponse(
     val queryText: String,
     val entries: List<DictionaryLookupEntry>,
     val resultType: LookupResultType,
-    val attribution: LookupAttribution,
+    val attributions: List<LookupAttribution>,
     val storagePolicy: LookupStoragePolicy,
 ) {
     init {
         require(providerId.isNotBlank()) { "공급원 ID가 필요합니다." }
         require(providerVersion.isNotBlank()) { "공급원 버전이 필요합니다." }
         require(queryText.isNotBlank()) { "조회 원문이 필요합니다." }
+        require(attributions.isNotEmpty()) { "공급원 표시 정보가 필요합니다." }
     }
 }
 
