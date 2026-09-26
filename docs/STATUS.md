@@ -7,8 +7,8 @@
 
 - 단계: 12 — v1 배포 준비
 - 상태: 진행 중
-- 완료한 작업: 단계 11 종료, 단계 12의 저장 형식 호환성, 에뮬레이터 접근성·태블릿 크기·문서 공급자 실패 처리, release 유사 benchmark 기준선, 50MiB 백업 왕복, 로컬 배포 요건과 산출물 점검
-- 현재 작업: Galaxy Z Flip4에 별도 benchmark APK·50MiB fixture 준비 완료; 잠금 해제 뒤 가져오기·성능·TalkBack 수동 회귀 대기
+- 완료한 작업: 단계 11 종료, 단계 12의 저장 형식 호환성, 에뮬레이터 접근성·태블릿 크기·문서 공급자 실패 처리, Galaxy Z Flip4를 포함한 release 유사 benchmark 기준선, 50MiB 백업 왕복, 로컬 배포 요건과 산출물 점검
+- 현재 작업: Galaxy Z Flip4의 TalkBack 실제 한 손가락 탐색·두 손가락 스크롤과 주관적 선택 피로도 수동 회귀 대기
 - 실제 휴대폰에서는 무선 ADB로 설치·실행했다. USB ADB는 인증 전송 오류로 `offline` 상태가 반복된다.
 
 ## 확인한 사실
@@ -95,6 +95,15 @@ ADB는 PATH에 없어 다음과 같이 SDK 내부 경로로 확인했다.
 
 ## 최근 작업 기록
 
+### 2026-09-26 — Galaxy Z Flip4 50MiB benchmark·TalkBack 회귀
+
+- 상태: 검증 대기 — 자동 성능 회귀와 TalkBack 음성·키보드 포커스 확인 완료, 실제 손가락 제스처와 주관적 피로도 대기
+- 변경: 앱 코드는 바꾸지 않았다. 제품과 분리된 비디버그 가능 `dev.worldviewer.benchmark`와 Downloads의 50MiB fixture만 사용했고 기존 `dev.worldviewer` 패키지와 데이터는 건드리지 않았다.
+- 검증: 52,428,800바이트·SHA-256 `f94f99a8db19ff79ddebd1b4762acb8de9ebdca193e8b341223d6769ffcad696` 원본 복사는 368ms, 24,652블록·UTF-16 18,932,622자의 인덱스 준비는 2,396ms였다. 세 번의 콜드 시작은 Activity 152~175ms, 문서 준비 2,398~2,500ms, 준비 뒤 PSS 82,638~84,857KB였다. 원문 6분·360회 스크롤은 PSS 94,021~97,407KB, 49,660프레임 중 jank 173개(0.35%), p50/p90/p95 5ms·p99 6ms였다. 전체 병음 6분·360회는 PSS 103,296~106,060KB, 48,797프레임 중 jank 186개(0.38%), p50/p90/p95 5ms·p99 7ms였다. 두 구간 모두 PID 7953을 유지했고 앱 FATAL 기록은 없었다.
+- 기기 확인: Galaxy Z Flip4 `SM-F721N`, Android 16/API 36, One UI 8.0, 1080×2640·480dpi. 무선 ADB로 실제 화면을 조작했다. 배터리는 자동 회귀 전후 75%에서 72%로 줄었다. TalkBack을 잠시 켜 touch exploration·다중 손가락 요청 활성화, 제목·본문·`TXT 추가`의 파란 포커스, 삼성 TTS의 접근성 음성 합성, 키보드 포커스와 Enter로 시스템 파일 선택기 실행을 확인했다. 최초 실행 튜토리얼의 전화 권한은 거부했으며 시험 뒤 접근성 사용·서비스 목록·touch exploration을 기존 `0`·빈 목록·`0`으로 복원했다.
+- 미해결 문제: ADB 입력은 실제 다중 손가락을 재현하지 못한다. 사용자가 TalkBack의 한 손가락 탐색·두 손가락 스크롤, 중국어 읽기 체감과 선택 피로도를 직접 확인해야 한다. 이번 12분 자동 스크롤은 30분 이상 수동 독서 회귀를 대신하지 않는다. 후속 수동 시험을 위해 benchmark 패키지와 fixture는 남겨 두었다.
+- 다음 작업: Galaxy Z Flip4에서 TalkBack을 켜고 한 손가락 포커스 이동·두 손가락 본문 스크롤·선택 대체 버튼을 직접 확인한 뒤 결과를 기록한다.
+
 ### 2026-09-26 — 개인정보처리방침·Data safety 초안
 
 - 상태: 검증 대기 — 현재 APK 기준 문안과 제출 판단 작성 완료, 배포 주체·URL·최종 release 대조 대기
@@ -112,15 +121,6 @@ ADB는 PATH에 없어 다음과 같이 SDK 내부 경로로 확인했다.
 - 기기 확인: Android 16/API 36.1, 1080×2400·420dpi 에뮬레이터. 시험 뒤 저장해 둔 SHA-256 `77d187babbc08249de53b0399f262e2cf479cdfa77f2895b6c90e3a8201f7437` snapshot을 새 상태에 복원해 24,652블록·UTF-16 18,932,622자·읽기 위치 0.3%로 되돌렸고 임시 복원 사본을 삭제했다.
 - 미해결 문제: ADB 입력은 일정한 1초 간격이라 빠른 손가락 fling, 멈춰 읽기, 선택과 화면 전환이 섞인 실제 독서 부하를 대신하지 않는다. `gfxinfo`의 high-input-latency 수치는 합성 입력 대기까지 포함해 해석하지 않았다. 12분 결과는 30분 이상 실제 기기 회귀의 통과 근거가 아니다.
 - 다음 작업: 잠금 해제된 Galaxy Z Flip4에서 준비된 50MiB fixture를 가져와 같은 측정과 TalkBack 수동 회귀를 실행한다.
-
-### 2026-09-26 — Galaxy Z Flip4 benchmark 검증 준비
-
-- 상태: 검증 대기 — 별도 패키지와 입력 준비·잠금 화면 뒤 기동 확인 완료, 실제 화면 조작 대기
-- 변경: 앱 코드는 바꾸지 않았다. Galaxy Z Flip4에 비디버그 가능 `dev.worldviewer.benchmark`를 새로 설치하고 Downloads에 50MiB 반복 중국어 fixture를 배치했다. 기존 `dev.worldviewer` 패키지와 데이터는 건드리지 않았다.
-- 검증: benchmark APK는 versionCode 1·versionName `0.1.0-dev-benchmark`이고 package flags에 `DEBUGGABLE`이 없다. fixture는 52,428,800바이트·SHA-256 `f94f99a8db19ff79ddebd1b4762acb8de9ebdca193e8b341223d6769ffcad696`으로 에뮬레이터 기준 입력과 같다. 화면이 잠긴 채 콜드 시작은 1,220ms, 내장 fixture 128블록·UTF-16 97,902자의 준비는 4,105ms였고 crash 기록은 없었다. 확인 뒤 앱을 강제 종료했으며 화면은 계속 꺼진 잠금 상태다.
-- 기기 확인: Galaxy Z Flip4 `SM-F721N`, Android 16/API 36, One UI 8.0. 배터리 80%, 공유 저장소 여유 약 246.8GiB. 잠금 때문에 50MiB 가져오기와 화면 결과는 확인하지 않았다.
-- 미해결 문제: 사용자가 잠금을 해제해야 시스템 파일 선택기, 스크롤, 전체 병음, TalkBack 음성·두 손가락 탐색과 주관적 피로도를 검증할 수 있다. 시험이 끝나면 benchmark 패키지와 Downloads fixture를 제거한다.
-- 다음 작업: 휴대폰 잠금 해제 뒤 준비된 fixture를 benchmark 앱으로 가져오고 에뮬레이터와 같은 성능 절차를 실행한다.
 
 ### 2026-09-26 — 낮은 압축률 50MiB 원문 백업 측정
 
