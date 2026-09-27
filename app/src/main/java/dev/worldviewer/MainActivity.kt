@@ -15,6 +15,7 @@ import android.os.storage.StorageManager
 import android.provider.OpenableColumns
 import android.text.SpannableString
 import android.text.Spanned
+import android.text.InputType
 import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
 import android.util.Log
@@ -47,6 +48,9 @@ import dev.worldviewer.backup.WorldViewerRestore
 import dev.worldviewer.lookup.DictionaryLookupCoordinator
 import dev.worldviewer.lookup.DictionaryLookupRequest
 import dev.worldviewer.lookup.DictionaryLookupResponse
+import dev.worldviewer.lookup.AzureTranslationProvider
+import dev.worldviewer.lookup.AzureTranslatorCredentialStore
+import dev.worldviewer.lookup.AzureTranslatorCredentials
 import dev.worldviewer.lookup.LookupResultType
 import dev.worldviewer.lookup.MyMemoryTranslationProvider
 import dev.worldviewer.lookup.OfflineKoreanDictionaryProvider
@@ -2680,15 +2684,25 @@ class MainActivity : Activity() {
             })
         }
         if (response.resultType == LookupResultType.TRANSLATION) {
+            val isAzure = response.providerId == "azure-translator-f0"
             content.addView(TextView(this).apply {
                 setPadding(0, 16.dp, 0, 8.dp)
-                text = getString(R.string.online_translation_attribution)
-                contentDescription = getString(R.string.online_translation_attribution_description)
-                setOnClickListener { openWebPage(MYMEMORY_URL) }
+                text = getString(
+                    if (isAzure) R.string.azure_translation_attribution
+                    else R.string.online_translation_attribution,
+                )
+                contentDescription = getString(
+                    if (isAzure) R.string.azure_translation_attribution_description
+                    else R.string.online_translation_attribution_description,
+                )
+                setOnClickListener { openWebPage(if (isAzure) AZURE_TRANSLATOR_URL else MYMEMORY_URL) }
             })
             content.addView(TextView(this).apply {
                 textSize = 12f
-                text = getString(R.string.online_translation_notice)
+                text = getString(
+                    if (isAzure) R.string.azure_translation_notice
+                    else R.string.online_translation_notice,
+                )
             })
         }
         val scroll = ScrollView(this).apply { addView(content) }
@@ -2704,9 +2718,61 @@ class MainActivity : Activity() {
     }
 
     private fun startOnlineTranslation(target: MeaningTarget) {
+        val credentials = AzureTranslatorCredentialStore(applicationContext).load()
+        if (credentials != null) {
+            requestAzureTranslation(target, credentials)
+            return
+        }
+        showAzureCredentialsDialog(target)
+    }
+
+    private fun showAzureCredentialsDialog(target: MeaningTarget) {
+        val padding = 24.dp
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, 0, padding, 0)
+        }
+        val keyField = EditText(this).apply {
+            hint = getString(R.string.azure_translation_key_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        }
+        val regionField = EditText(this).apply {
+            hint = getString(R.string.azure_translation_region_hint)
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        fields.addView(keyField)
+        fields.addView(regionField)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.azure_translation_setup_title)
+            .setMessage(R.string.azure_translation_setup_message)
+            .setView(fields)
+            .setPositiveButton(R.string.azure_translation_save, null)
+            .setNeutralButton(R.string.azure_translation_use_mymemory) { _, _ -> startMyMemoryTranslation(target) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val result = runCatching {
+                    AzureTranslatorCredentials(
+                        key = keyField.text.toString().trim(),
+                        region = regionField.text.toString().trim(),
+                    )
+                }
+                result.onSuccess { credentials ->
+                    AzureTranslatorCredentialStore(applicationContext).save(credentials)
+                    dialog.dismiss()
+                    requestAzureTranslation(target, credentials)
+                }.onFailure { keyField.error = it.message }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun startMyMemoryTranslation(target: MeaningTarget) {
         val preferences = getSharedPreferences(DICTIONARY_PREFERENCES, MODE_PRIVATE)
         if (preferences.getBoolean(MYMEMORY_CONSENT, false)) {
-            requestOnlineTranslation(target)
+            requestMyMemoryTranslation(target)
             return
         }
         AlertDialog.Builder(this)
@@ -2714,13 +2780,28 @@ class MainActivity : Activity() {
             .setMessage(R.string.online_translation_consent_message)
             .setPositiveButton(R.string.online_translation_continue) { _, _ ->
                 preferences.edit().putBoolean(MYMEMORY_CONSENT, true).apply()
-                requestOnlineTranslation(target)
+                requestMyMemoryTranslation(target)
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
-    private fun requestOnlineTranslation(target: MeaningTarget) {
+    private fun requestMyMemoryTranslation(target: MeaningTarget) {
+        requestOnlineTranslation(target, MyMemoryTranslationProvider(), isAzure = false)
+    }
+
+    private fun requestAzureTranslation(
+        target: MeaningTarget,
+        credentials: AzureTranslatorCredentials,
+    ) {
+        requestOnlineTranslation(target, AzureTranslationProvider(credentials), isAzure = true)
+    }
+
+    private fun requestOnlineTranslation(
+        target: MeaningTarget,
+        provider: dev.worldviewer.lookup.DictionaryLookupProvider,
+        isAzure: Boolean,
+    ) {
         cancelDictionaryLookup()
         val coordinator = DictionaryLookupCoordinator(
             worker = dictionaryExecutor,
@@ -2737,8 +2818,28 @@ class MainActivity : Activity() {
                     Log.e(MEANING_TAG, "online translation failed", error)
                     AlertDialog.Builder(this)
                         .setTitle(R.string.online_translation_failed)
-                        .setMessage(getString(R.string.online_translation_failed_message, error.message ?: getString(R.string.unknown_error)))
-                        .setPositiveButton(R.string.online_translation) { _, _ -> requestOnlineTranslation(target) }
+                        .setMessage(
+                            getString(
+                                if (isAzure) R.string.azure_translation_failed_message
+                                else R.string.online_translation_failed_message,
+                                error.message ?: getString(R.string.unknown_error),
+                            ),
+                        )
+                        .setPositiveButton(R.string.online_translation) { _, _ ->
+                            if (isAzure) {
+                                AzureTranslatorCredentialStore(applicationContext).load()?.let { saved ->
+                                    requestAzureTranslation(target, saved)
+                                } ?: showAzureCredentialsDialog(target)
+                            } else requestMyMemoryTranslation(target)
+                        }
+                        .setNeutralButton(R.string.azure_translation_change_settings) { _, _ ->
+                            if (isAzure) {
+                                AzureTranslatorCredentialStore(applicationContext).clear()
+                                showAzureCredentialsDialog(target)
+                            } else {
+                                startOnlineTranslation(target)
+                            }
+                        }
                         .setNegativeButton(android.R.string.cancel, null)
                         .show()
                 }
@@ -2759,7 +2860,7 @@ class MainActivity : Activity() {
                 rangeEndUtf16 = target.endUtf16,
                 selectionVersion = target.selectionVersion,
             ),
-            MyMemoryTranslationProvider(),
+            provider,
         )
     }
 
@@ -3428,6 +3529,7 @@ class MainActivity : Activity() {
         const val CC_CEDICT_URL = "https://www.mdbg.net/chinese/dictionary?page=cc-cedict"
         const val GOOGLE_TRANSLATE_URL = "https://translate.google.com/"
         const val MYMEMORY_URL = "https://mymemory.translated.net/"
+        const val AZURE_TRANSLATOR_URL = "https://azure.microsoft.com/products/ai-services/ai-translator/"
         val SELECTION_DELAYS = setOf(250, 350, 450)
         val STORED_NAME = Regex("[0-9a-f]{64}\\.original")
     }
