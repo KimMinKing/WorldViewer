@@ -129,4 +129,35 @@ class IndexedTextBlockSourceTest {
         assertEquals("戊己", source.cachedBlock(2)?.text)
         source.close()
     }
+
+    @Test
+    fun `reads a long selection across uncached blocks without filling the reader cache`() {
+        val directory = Files.createTempDirectory("worldviewer-long-selection").toFile()
+        val originalText = "甲乙𠮷\n".repeat(1_600)
+        val original = directory.resolve("original").apply { writeText(originalText) }
+        val summary = StreamingTextIndex.build(
+            original,
+            directory.resolve("cache"),
+            "2".repeat(64),
+            "UTF-8",
+            maxBlockUtf16 = 33,
+        )
+        val source = IndexedTextBlockSource(
+            StreamingTextIndex.Reader(summary.indexFile, summary.dataFile),
+            deliver = { it() },
+            cacheCapacity = 2,
+        )
+        val latch = CountDownLatch(1)
+        var selected: Result<String>? = null
+
+        source.readRange(100, 7500) { result ->
+            selected = result
+            latch.countDown()
+        }
+
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        assertEquals(originalText.substring(100, 7500), selected?.getOrThrow())
+        assertEquals(0, source.cachedBlockCount())
+        source.close()
+    }
 }

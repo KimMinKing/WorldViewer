@@ -16,6 +16,8 @@ interface TextBlockSource : Closeable {
 
     fun requestBlockContaining(globalUtf16: Int, onAvailable: (Int) -> Unit)
 
+    fun readRange(startUtf16: Int, endUtf16: Int, onComplete: (Result<String>) -> Unit)
+
     override fun close() = Unit
 }
 
@@ -41,6 +43,12 @@ class InMemoryTextBlockSource(private val blocks: List<TextBlock>) : TextBlockSo
     override fun requestBlockContaining(globalUtf16: Int, onAvailable: (Int) -> Unit) {
         val position = cachedPositionFor(globalUtf16)
         if (position >= 0) onAvailable(position)
+    }
+
+    override fun readRange(startUtf16: Int, endUtf16: Int, onComplete: (Result<String>) -> Unit) {
+        onComplete(runCatching {
+            readTextRange(startUtf16, endUtf16, cachedPositionFor(startUtf16), blockCount, blocks::get)
+        })
     }
 }
 
@@ -138,6 +146,21 @@ class IndexedTextBlockSource(
         }
     }
 
+    override fun readRange(startUtf16: Int, endUtf16: Int, onComplete: (Result<String>) -> Unit) {
+        worker.execute {
+            val result = runCatching {
+                readTextRange(
+                    startUtf16,
+                    endUtf16,
+                    reader.positionForUtf16(startUtf16),
+                    reader.blockCount,
+                    reader::blockAt,
+                )
+            }
+            deliver { if (!isClosed()) onComplete(result) }
+        }
+    }
+
     fun prefetch(centerPosition: Int, radius: Int = 1, onAvailable: (Int) -> Unit = {}) {
         require(radius >= 0)
         val start = maxOf(0, centerPosition - radius)
@@ -163,4 +186,26 @@ class IndexedTextBlockSource(
     }
 
     private fun isClosed(): Boolean = synchronized(lock) { closed }
+}
+
+private fun readTextRange(
+    startUtf16: Int,
+    endUtf16: Int,
+    firstPosition: Int,
+    blockCount: Int,
+    blockAt: (Int) -> TextBlock,
+): String {
+    require(startUtf16 >= 0 && endUtf16 > startUtf16 && firstPosition in 0 until blockCount)
+    val result = StringBuilder(endUtf16 - startUtf16)
+    var cursor = startUtf16
+    var position = firstPosition
+    while (cursor < endUtf16) {
+        require(position < blockCount) { "선택한 원문의 끝을 찾을 수 없습니다." }
+        val block = blockAt(position++)
+        require(cursor in block.startUtf16 until block.endUtf16) { "본문 블록이 연속되지 않습니다." }
+        val next = minOf(endUtf16, block.endUtf16)
+        result.append(block.text, cursor - block.startUtf16, next - block.startUtf16)
+        cursor = next
+    }
+    return result.toString()
 }

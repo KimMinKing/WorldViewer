@@ -2480,36 +2480,59 @@ class MainActivity : Activity() {
 
     private fun showSelectedMeanings() {
         val range = selectionGestureController?.completedSelection() ?: return
-        val source = selectedSourceText(range)
-        if (source == null || source.isBlank() || source.length > UserMeaningStore.MAX_SOURCE_UTF16) {
+        if (range.endUtf16 - range.startUtf16 > MAX_TRANSLATION_SELECTION_UTF16) {
             Toast.makeText(this, R.string.meaning_selection_unavailable, Toast.LENGTH_SHORT).show()
             return
         }
-        val target = MeaningTarget(
-            sourceText = source,
-            documentSha256 = currentDocumentSha256,
-            startUtf16 = range.startUtf16,
-            endUtf16 = range.endUtf16,
-            selectionVersion = selectionRequestGate.snapshot(),
-        )
+        val adapter = textBlockAdapter ?: return
+        val selectionVersion = selectionRequestGate.snapshot()
+        val documentSha256 = currentDocumentSha256
         blockExecutor.execute {
-            val result = runCatching {
-                val all = userMeaningStore().load()
-                UserMeaningIndex(all).resolve(target.query())
-            }
-            runOnUiThread {
-                if (isDestroyed || !selectionRequestGate.isCurrent(target.selectionVersion)) {
-                    Log.i(MEANING_TAG, "stale selection result discarded")
-                    return@runOnUiThread
-                }
-                result.onSuccess { meanings ->
-                    if (meanings.isEmpty()) {
-                        startOnlineTranslation(target)
-                    } else {
-                        showMeaningDialog(target, meanings)
+            adapter.readRange(range.startUtf16, range.endUtf16) { textResult ->
+                runOnUiThread {
+                    if (isDestroyed || !selectionRequestGate.isCurrent(selectionVersion)) {
+                        Log.i(MEANING_TAG, "stale selection result discarded")
+                        return@runOnUiThread
+                    }
+                    textResult.onSuccess { source ->
+                        if (source.isBlank() ||
+                            source.codePointCount(0, source.length) > AzureTranslationProvider.MAX_REQUEST_CHARACTERS
+                        ) {
+                            Toast.makeText(this, R.string.meaning_selection_unavailable, Toast.LENGTH_SHORT).show()
+                            return@onSuccess
+                        }
+                        val target = MeaningTarget(
+                            sourceText = source,
+                            documentSha256 = documentSha256,
+                            startUtf16 = range.startUtf16,
+                            endUtf16 = range.endUtf16,
+                            selectionVersion = selectionVersion,
+                        )
+                        if (source.length > UserMeaningStore.MAX_SOURCE_UTF16) {
+                            startOnlineTranslation(target)
+                        } else {
+                            loadSavedMeanings(target)
+                        }
+                    }.onFailure { error ->
+                        Log.e(MEANING_TAG, "selected text unavailable", error)
+                        Toast.makeText(this, R.string.meaning_selection_unavailable, Toast.LENGTH_SHORT).show()
                     }
                 }
-                    .onFailure(::showMeaningFailure)
+            }
+        }
+    }
+
+    private fun loadSavedMeanings(target: MeaningTarget) {
+        blockExecutor.execute {
+            val result = runCatching {
+                UserMeaningIndex(userMeaningStore().load()).resolve(target.query())
+            }
+            runOnUiThread {
+                if (isDestroyed || !selectionRequestGate.isCurrent(target.selectionVersion)) return@runOnUiThread
+                result.onSuccess { meanings ->
+                    if (meanings.isEmpty()) startOnlineTranslation(target)
+                    else showMeaningDialog(target, meanings)
+                }.onFailure(::showMeaningFailure)
             }
         }
     }
@@ -2546,12 +2569,17 @@ class MainActivity : Activity() {
         val isAzure = response.providerId == "azure-translator-f0"
         val title = if (isAzure) R.string.azure_translation else R.string.mymemory_translation
         if (response.entries.isEmpty()) {
-            AlertDialog.Builder(this)
+            val builder = AlertDialog.Builder(this)
                 .setTitle(title)
-                .setMessage(R.string.translation_no_result)
-                .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
+                .setMessage(
+                    if (target.canSaveMeaning()) R.string.translation_no_result
+                    else R.string.translation_no_result_long,
+                )
                 .setNegativeButton(android.R.string.cancel, null)
-                .show()
+            if (target.canSaveMeaning()) {
+                builder.setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
+            }
+            builder.show()
             return
         }
         val padding = 24.dp
@@ -2563,6 +2591,12 @@ class MainActivity : Activity() {
             Color.rgb(236, 232, 222)
         } else {
             Color.rgb(35, 33, 29)
+        }
+        if (!target.canSaveMeaning()) {
+            content.addView(TextView(this).apply {
+                textSize = 12f
+                text = getString(R.string.translation_long_save_unavailable)
+            })
         }
         content.addView(TextView(this).apply {
             textSize = 16f
@@ -2609,15 +2643,18 @@ class MainActivity : Activity() {
             )
         })
         val scroll = ScrollView(this).apply { addView(content) }
-        AlertDialog.Builder(this)
+        val builder = AlertDialog.Builder(this)
             .setTitle(title)
             .setView(scroll)
-            .setPositiveButton(R.string.meaning_add) { _, _ -> saveLookupMeanings(target, response) }
             .setNegativeButton(android.R.string.cancel, null)
-            .show()
+        if (target.canSaveMeaning()) {
+            builder.setPositiveButton(R.string.meaning_add) { _, _ -> saveLookupMeanings(target, response) }
+        }
+        builder.show()
     }
 
     private fun saveLookupMeanings(target: MeaningTarget, response: DictionaryLookupResponse) {
+        if (!target.canSaveMeaning()) return
         val suggestions = response.savableMeanings(UserMeaningStore.MAX_MEANING_UTF16)
         if (suggestions.isEmpty()) {
             showAddMeaning(target)
@@ -2687,9 +2724,13 @@ class MainActivity : Activity() {
             .setMessage(R.string.azure_translation_setup_message)
             .setView(fields)
             .setPositiveButton(R.string.azure_translation_save, null)
-            .setNeutralButton(R.string.azure_translation_use_mymemory) { _, _ -> startMyMemoryTranslation(target) }
             .setNegativeButton(android.R.string.cancel, null)
             .create()
+        if (target.sourceText.toByteArray(Charsets.UTF_8).size <= 500) {
+            dialog.setButton(AlertDialog.BUTTON_NEUTRAL, getString(R.string.azure_translation_use_mymemory)) { _, _ ->
+                startMyMemoryTranslation(target)
+            }
+        }
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val result = runCatching {
@@ -2820,6 +2861,7 @@ class MainActivity : Activity() {
     }
 
     private fun showAddMeaning(target: MeaningTarget) {
+        if (!target.canSaveMeaning()) return
         val padding = 24.dp
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -3400,6 +3442,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val MAX_BLOCK_UTF16 = 768
+        const val MAX_TRANSLATION_SELECTION_UTF16 = AzureTranslationProvider.MAX_REQUEST_CHARACTERS * 2
         const val REQUEST_OPEN_TXT = 1001
         const val REQUEST_CREATE_BACKUP = 1002
         const val REQUEST_OPEN_BACKUP = 1003
@@ -3482,6 +3525,8 @@ class MainActivity : Activity() {
         val endUtf16: Int,
         val selectionVersion: Long,
     ) {
+        fun canSaveMeaning(): Boolean = sourceText.length <= UserMeaningStore.MAX_SOURCE_UTF16
+
         fun query() = MeaningQuery(sourceText, documentSha256, startUtf16, endUtf16)
     }
 

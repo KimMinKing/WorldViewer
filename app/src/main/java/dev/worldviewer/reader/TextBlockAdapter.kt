@@ -100,6 +100,10 @@ class TextBlockAdapter(
         return if (position < 0) null else blockSource.cachedBlock(position)
     }
 
+    fun readRange(startUtf16: Int, endUtf16: Int, onComplete: (Result<String>) -> Unit) {
+        blockSource.readRange(startUtf16, endUtf16, onComplete)
+    }
+
     fun requestBlockContaining(globalUtf16: Int, onAvailable: (Int) -> Unit) {
         blockSource.requestBlockContaining(globalUtf16) { position ->
             if (position in 0 until itemCount) notifyItemChanged(position, BLOCK_PAYLOAD)

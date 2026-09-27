@@ -81,11 +81,13 @@
     <string name="meaning_edit_title">%1$s · %2$s</string>
     <string name="meaning_delete">삭제</string>
     <string name="meaning_delete_message">“%1$s: %2$s” 뜻을 삭제할까요?</string>
-    <string name="meaning_selection_unavailable">선택한 원문을 읽을 수 없거나 200자를 넘습니다.</string>
+    <string name="meaning_selection_unavailable">선택한 원문을 읽을 수 없거나 번역 한도 50,000자를 넘습니다.</string>
     <string name="meaning_failed">사용자 뜻 작업 실패</string>
     <string name="translation_source">원문\n%1$s\n</string>
     <string name="translation_result">한국어 번역</string>
     <string name="translation_no_result">번역 결과가 없습니다. 직접 뜻을 추가할 수 있습니다.</string>
+    <string name="translation_no_result_long">번역 결과가 없습니다.</string>
+    <string name="translation_long_save_unavailable">긴 원문은 번역만 가능합니다. 뜻을 저장하려면 200자 이하로 선택하세요.</string>
     <string name="translation_cancel">번역 취소</string>
     <string name="azure_translation">Azure 번역</string>
     <string name="mymemory_translation">MyMemory 번역</string>

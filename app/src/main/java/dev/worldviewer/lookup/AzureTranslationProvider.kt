@@ -55,7 +55,7 @@ class AzureTranslationProvider(
 
     companion object {
         const val ENDPOINT = "https://api.cognitive.microsofttranslator.com/"
-        private const val MAX_REQUEST_CHARACTERS = 50_000
+        const val MAX_REQUEST_CHARACTERS = 50_000
         val AZURE_ATTRIBUTION = LookupAttribution(
             displayName = "Microsoft Azure Translator",
             sourceUrl = "https://azure.microsoft.com/products/ai-services/ai-translator/",
