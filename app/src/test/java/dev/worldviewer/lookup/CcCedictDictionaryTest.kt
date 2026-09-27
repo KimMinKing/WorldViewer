@@ -29,6 +29,16 @@ class CcCedictDictionaryTest {
     }
 
     @Test
+    fun `every homograph result still exactly matches the requested headword`() {
+        copiedDictionary().use { dictionary ->
+            val entries = dictionary.lookup("江")
+
+            assertTrue(entries.size > 1)
+            assertTrue(entries.all { it.simplified == "江" || it.traditional == "江" })
+        }
+    }
+
+    @Test
     fun `packaged index metadata is pinned`() {
         copiedDictionary().use { dictionary ->
             assertEquals("2026-09-26T00:33:45Z", dictionary.providerVersion)

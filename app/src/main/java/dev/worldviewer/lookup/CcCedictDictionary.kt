@@ -43,13 +43,14 @@ class CcCedictDictionary private constructor(
                 0 -> {
                     val matches = file.readInt()
                     require(matches in 1..MAX_MATCHES_PER_HEADWORD) { "사전 표제어 결과 수가 손상됐습니다." }
-                    return buildList(minOf(matches, maximumEntries)) {
-                        repeat(matches) { index ->
-                            val entryId = file.readInt()
+                    // Read every ID before seeking into entry data. readEntry changes the shared
+                    // RandomAccessFile position, so interleaving the two reads corrupts ID 2+.
+                    val entryIds = IntArray(matches) {
+                        file.readInt().also { entryId ->
                             require(entryId in 0 until entryCount) { "사전 항목 번호가 손상됐습니다." }
-                            if (index < maximumEntries) add(readEntry(entryId))
                         }
                     }
+                    return entryIds.take(maximumEntries).map(::readEntry)
                 }
                 in Int.MIN_VALUE until 0 -> low = middle + 1
                 else -> high = middle - 1

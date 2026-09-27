@@ -56,6 +56,7 @@ import dev.worldviewer.lookup.LookupResultType
 import dev.worldviewer.lookup.MyMemoryTranslationProvider
 import dev.worldviewer.lookup.OfflineKoreanDictionaryProvider
 import dev.worldviewer.lookup.CcCedictLookupProvider
+import dev.worldviewer.lookup.savableMeanings
 import dev.worldviewer.reader.AutoBookCover
 import dev.worldviewer.reader.AnnotationType
 import dev.worldviewer.reader.AutomaticChapter
@@ -2713,12 +2714,49 @@ class MainActivity : Activity() {
         val builder = AlertDialog.Builder(this)
             .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
             .setView(scroll)
-            .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
+            .setPositiveButton(R.string.meaning_add) { _, _ -> saveLookupMeanings(target, response) }
             .setNegativeButton(android.R.string.cancel, null)
         if (response.resultType != LookupResultType.TRANSLATION) {
             builder.setNeutralButton(R.string.online_translation) { _, _ -> startOnlineTranslation(target) }
         }
         builder.show()
+    }
+
+    private fun saveLookupMeanings(target: MeaningTarget, response: DictionaryLookupResponse) {
+        val suggestions = response.savableMeanings(UserMeaningStore.MAX_MEANING_UTF16)
+        if (suggestions.isEmpty()) {
+            showAddMeaning(target)
+            return
+        }
+        val scope = if (target.documentSha256 == null) MeaningScope.GLOBAL else MeaningScope.RANGE
+        val now = System.currentTimeMillis()
+        updateUserMeanings({ saved ->
+            val existing = saved.asSequence()
+                .filter {
+                    it.sourceText == target.sourceText &&
+                        it.scope == scope &&
+                        it.documentSha256 == (if (scope == MeaningScope.GLOBAL) null else target.documentSha256) &&
+                        it.rangeStartUtf16 == (if (scope == MeaningScope.RANGE) target.startUtf16 else null) &&
+                        it.rangeEndUtf16 == (if (scope == MeaningScope.RANGE) target.endUtf16 else null)
+                }
+                .map(UserMeaning::meaning)
+                .toSet()
+            saved + suggestions.filterNot(existing::contains).map { meaning ->
+                UserMeaning(
+                    id = UUID.randomUUID().toString(),
+                    sourceText = target.sourceText,
+                    meaning = meaning,
+                    scope = scope,
+                    documentSha256 = if (scope == MeaningScope.GLOBAL) null else target.documentSha256,
+                    rangeStartUtf16 = if (scope == MeaningScope.RANGE) target.startUtf16 else null,
+                    rangeEndUtf16 = if (scope == MeaningScope.RANGE) target.endUtf16 else null,
+                    createdAtEpochMillis = now,
+                    updatedAtEpochMillis = now,
+                )
+            }
+        }) {
+            if (selectionRequestGate.isCurrent(target.selectionVersion)) showSelectedMeanings()
+        }
     }
 
     private fun startOnlineTranslation(target: MeaningTarget) {
