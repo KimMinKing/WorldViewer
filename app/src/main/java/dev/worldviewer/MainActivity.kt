@@ -2543,9 +2543,11 @@ class MainActivity : Activity() {
     }
 
     private fun showDictionaryResult(target: MeaningTarget, response: DictionaryLookupResponse) {
+        val isAzure = response.providerId == "azure-translator-f0"
+        val title = if (isAzure) R.string.azure_translation else R.string.mymemory_translation
         if (response.entries.isEmpty()) {
             AlertDialog.Builder(this)
-                .setTitle(getString(R.string.translation_title, target.sourceText))
+                .setTitle(title)
                 .setMessage(R.string.translation_no_result)
                 .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
                 .setNegativeButton(android.R.string.cancel, null)
@@ -2557,22 +2559,29 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, 8.dp, padding, 8.dp)
         }
+        val resultTextColor = if (currentReaderStyle.theme == ReaderTheme.DARK) {
+            Color.rgb(236, 232, 222)
+        } else {
+            Color.rgb(35, 33, 29)
+        }
+        content.addView(TextView(this).apply {
+            textSize = 16f
+            setTextColor(resultTextColor)
+            text = getString(R.string.translation_source, target.sourceText)
+        })
         response.entries.forEachIndexed { entryIndex, entry ->
             content.addView(TextView(this).apply {
                 textSize = 16f
-                setTextColor(
-                    if (currentReaderStyle.theme == ReaderTheme.DARK) {
-                        Color.rgb(236, 232, 222)
-                    } else {
-                        Color.rgb(35, 33, 29)
-                    },
-                )
+                setTextColor(resultTextColor)
                 text = buildString {
                     if (entryIndex > 0) append("\n")
-                    append(entry.headword)
+                    append(getString(R.string.translation_result))
+                    if (entry.headword != target.sourceText) append("\n").append(entry.headword)
                     entry.reading?.let { append("  ").append(it) }
                     entry.meanings.forEachIndexed { meaningIndex, meaning ->
-                        append("\n").append(meaningIndex + 1).append(". ").append(meaning)
+                        append("\n")
+                        if (entry.meanings.size > 1) append(meaningIndex + 1).append(". ")
+                        append(meaning)
                         entry.sourceMeanings.getOrNull(meaningIndex)?.let { source ->
                             append("\n   ").append(source)
                         }
@@ -2580,7 +2589,6 @@ class MainActivity : Activity() {
                 }
             })
         }
-        val isAzure = response.providerId == "azure-translator-f0"
         content.addView(TextView(this).apply {
             setPadding(0, 16.dp, 0, 8.dp)
             text = getString(
@@ -2602,7 +2610,7 @@ class MainActivity : Activity() {
         })
         val scroll = ScrollView(this).apply { addView(content) }
         AlertDialog.Builder(this)
-            .setTitle(getString(R.string.translation_title, target.sourceText))
+            .setTitle(title)
             .setView(scroll)
             .setPositiveButton(R.string.meaning_add) { _, _ -> saveLookupMeanings(target, response) }
             .setNegativeButton(android.R.string.cancel, null)
@@ -2779,7 +2787,7 @@ class MainActivity : Activity() {
         }
         dictionaryLookupCoordinator = coordinator
         dictionaryProgressDialog = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.translation_title, target.sourceText))
+            .setTitle(if (isAzure) R.string.azure_translation else R.string.mymemory_translation)
             .setMessage(
                 if (isAzure) R.string.azure_translation_progress else R.string.online_translation_progress,
             )
