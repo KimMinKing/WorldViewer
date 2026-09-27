@@ -41,13 +41,6 @@ Kotlin coroutines
 Guava utility artifact
 - com.google.guava:listenablefuture:1.0
 
-ML Kit translation runtime dependencies
-- AndroidX AppCompat, Activity, Fragment, Lifecycle, SavedState and related support artifacts
-- Google Android Data Transport, Firebase components and encoders
-- Google Play services base, basement and tasks
-- Square OkHttp 3.0.0 and Okio 1.6.0
-- javax.inject 1
-
 Project sources:
 - https://github.com/JetBrains/kotlin
 - https://github.com/JetBrains/java-annotations
@@ -64,36 +57,3 @@ as unicode_license_v3.txt in this directory. Exact source and generated hashes
 are recorded in ../pinyin/unihan_kmandarin_17.source.txt.
 
 Source: https://www.unicode.org/Public/17.0.0/ucd/Unihan.zip
-
-CC-CEDICT dictionary data
--------------------------
-
-The packaged exact-match Chinese dictionary index is generated from
-CC-CEDICT release 2026-09-26T00:33:45Z, published by MDBG and community
-contributors. It contains traditional and simplified headwords, numbered
-pinyin and English definitions. CC-CEDICT and WorldViewer's generated index
-are distributed under Creative Commons Attribution-ShareAlike 4.0
-International. A copy is included as cc_by_sa_4.0.txt. Exact source and
-generated hashes are recorded in ../dictionary/cc_cedict_20260926.source.txt.
-
-Source: https://www.mdbg.net/chinese/dictionary?page=cc-cedict
-License: https://creativecommons.org/licenses/by-sa/4.0/
-
-Google ML Kit on-device Translation
------------------------------------
-
-WorldViewer uses com.google.mlkit:translate:17.0.3 to translate CC-CEDICT's
-English definitions to Korean on the device after the user explicitly asks
-for a Korean dictionary result. The SDK can download and update translation
-models and send performance and utilization metrics to Google. The selected
-Chinese text and translation input/output are processed on-device according
-to Google's ML Kit privacy documentation.
-
-SDK terms and privacy: https://developers.google.com/ml-kit/terms
-Translation usage guidelines: https://developers.google.com/ml-kit/language/translation/translation-terms
-Attribution requirements: https://cloud.google.com/translate/attribution
-
-The "powered by Google Translate" badge was obtained from the official
-attribution asset package and is displayed adjacent to translated results.
-It remains a Google brand feature governed by Google's attribution and brand
-guidelines; its inclusion does not imply endorsement of WorldViewer.

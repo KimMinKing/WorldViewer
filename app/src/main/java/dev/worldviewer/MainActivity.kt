@@ -29,7 +29,6 @@ import android.widget.Button
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.RadioButton
@@ -49,13 +48,11 @@ import dev.worldviewer.lookup.DictionaryLookupCoordinator
 import dev.worldviewer.lookup.DictionaryLookupRequest
 import dev.worldviewer.lookup.DictionaryLookupResponse
 import dev.worldviewer.lookup.DebugAzureCredentialImport
+import dev.worldviewer.lookup.LegacyDictionaryCleanup
 import dev.worldviewer.lookup.AzureTranslationProvider
 import dev.worldviewer.lookup.AzureTranslatorCredentialStore
 import dev.worldviewer.lookup.AzureTranslatorCredentials
-import dev.worldviewer.lookup.LookupResultType
 import dev.worldviewer.lookup.MyMemoryTranslationProvider
-import dev.worldviewer.lookup.OfflineKoreanDictionaryProvider
-import dev.worldviewer.lookup.CcCedictLookupProvider
 import dev.worldviewer.lookup.savableMeanings
 import dev.worldviewer.reader.AutoBookCover
 import dev.worldviewer.reader.AnnotationType
@@ -167,7 +164,6 @@ class MainActivity : Activity() {
     private var restoreInProgress = false
     private var readerChromeVisible = false
     private var dictionaryLookupCoordinator: DictionaryLookupCoordinator? = null
-    private var dictionaryProvider: OfflineKoreanDictionaryProvider? = null
     private var dictionaryProgressDialog: AlertDialog? = null
     private val selectionRequestGate = SelectionRequestGate()
 
@@ -195,6 +191,10 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         if (DebugAzureCredentialImport.importIfPresent(applicationContext)) {
             Log.i(MEANING_TAG, "Imported local Azure Translator credentials into Android Keystore")
+        }
+        val removedLegacyDirectories = LegacyDictionaryCleanup.clean(applicationContext)
+        if (removedLegacyDirectories > 0) {
+            Log.i(MEANING_TAG, "Removed $removedLegacyDirectories discontinued dictionary directories")
         }
         if (WorldViewerRestore(filesDir, ::availableStorageBytes).recoverInterruptedRestore()) {
             Log.w(RESTORE_TAG, "Recovered an interrupted backup restore before loading reader data")
@@ -261,7 +261,7 @@ class MainActivity : Activity() {
         selectionButton("뒤로 늘리기", "선택 끝을 한 글자 뒤쪽으로 확장") {
             selectionGestureController?.adjust(SelectionEdge.END, 1)
         }
-        selectionButton("뜻", "선택한 원문의 저장된 뜻과 사전 보기") {
+        selectionButton("뜻", "선택한 원문의 저장된 뜻 또는 Azure 번역 보기") {
             showSelectedMeanings()
         }
         selectionButton("주석", "선택한 원문에 강조 또는 메모 추가") {
@@ -2504,7 +2504,7 @@ class MainActivity : Activity() {
                 }
                 result.onSuccess { meanings ->
                     if (meanings.isEmpty()) {
-                        startDictionaryLookup(target)
+                        startOnlineTranslation(target)
                     } else {
                         showMeaningDialog(target, meanings)
                     }
@@ -2531,7 +2531,7 @@ class MainActivity : Activity() {
     private fun showMeaningDialog(target: MeaningTarget, meanings: List<UserMeaning>) {
         val builder = AlertDialog.Builder(this)
             .setTitle(getString(R.string.meaning_title, target.sourceText))
-            .setPositiveButton(R.string.dictionary_lookup) { _, _ -> startDictionaryLookup(target) }
+            .setPositiveButton(R.string.azure_translation) { _, _ -> startOnlineTranslation(target) }
             .setNeutralButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
             .setNegativeButton(android.R.string.cancel, null)
         builder.setItems(meanings.map { value ->
@@ -2542,99 +2542,14 @@ class MainActivity : Activity() {
         builder.show()
     }
 
-    private fun startDictionaryLookup(target: MeaningTarget) {
-        val preferences = getSharedPreferences(DICTIONARY_PREFERENCES, MODE_PRIVATE)
-        when (preferences.getString(DICTIONARY_DOWNLOAD_POLICY, null)) {
-            DICTIONARY_POLICY_WIFI -> requestDictionaryLookup(target, wifiOnly = true)
-            DICTIONARY_POLICY_ANY_NETWORK -> requestDictionaryLookup(target, wifiOnly = false)
-            else -> showDictionaryModelConsent(target)
-        }
-    }
-
-    private fun showDictionaryModelConsent(target: MeaningTarget) {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.dictionary_model_title)
-            .setMessage(R.string.dictionary_model_message)
-            .setPositiveButton(R.string.dictionary_model_wifi) { _, _ ->
-                saveDictionaryDownloadPolicy(DICTIONARY_POLICY_WIFI)
-                requestDictionaryLookup(target, wifiOnly = true)
-            }
-            .setNeutralButton(R.string.dictionary_model_any_network) { _, _ ->
-                saveDictionaryDownloadPolicy(DICTIONARY_POLICY_ANY_NETWORK)
-                requestDictionaryLookup(target, wifiOnly = false)
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
-    }
-
-    private fun saveDictionaryDownloadPolicy(policy: String) {
-        getSharedPreferences(DICTIONARY_PREFERENCES, MODE_PRIVATE)
-            .edit()
-            .putString(DICTIONARY_DOWNLOAD_POLICY, policy)
-            .apply()
-    }
-
-    private fun requestDictionaryLookup(target: MeaningTarget, wifiOnly: Boolean) {
-        cancelDictionaryLookup()
-        val provider = dictionaryProvider ?: OfflineKoreanDictionaryProvider(
-            CcCedictLookupProvider(applicationContext),
-            wifiOnly,
-        ).also { dictionaryProvider = it }
-        val coordinator = DictionaryLookupCoordinator(
-            worker = dictionaryExecutor,
-            deliver = { action -> runOnUiThread(action) },
-        ) { request, result ->
-            dictionaryProgressDialog?.dismiss()
-            dictionaryProgressDialog = null
-            if (dictionaryProvider === provider) {
-                provider.close()
-                dictionaryProvider = null
-            }
-            if (isDestroyed || !selectionRequestGate.isCurrent(request.selectionVersion)) {
-                Log.i(MEANING_TAG, "stale dictionary result discarded")
-                return@DictionaryLookupCoordinator
-            }
-            val resultTarget = MeaningTarget(
-                sourceText = request.sourceText,
-                documentSha256 = request.documentId,
-                startUtf16 = checkNotNull(request.rangeStartUtf16),
-                endUtf16 = checkNotNull(request.rangeEndUtf16),
-                selectionVersion = request.selectionVersion,
-            )
-            result.onSuccess { response -> showDictionaryResult(resultTarget, response) }
-                .onFailure { error -> showDictionaryFailure(resultTarget, error) }
-        }
-        dictionaryLookupCoordinator = coordinator
-        dictionaryProgressDialog = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
-            .setMessage(R.string.dictionary_lookup_progress)
-            .setNegativeButton(R.string.dictionary_lookup_cancel) { _, _ -> cancelDictionaryLookup() }
-            .setOnCancelListener { cancelDictionaryLookup() }
-            .show()
-        coordinator.request(
-            DictionaryLookupRequest(
-                sourceText = target.sourceText,
-                documentId = target.documentSha256,
-                documentVersion = target.documentSha256,
-                rangeStartUtf16 = target.startUtf16,
-                rangeEndUtf16 = target.endUtf16,
-                selectionVersion = target.selectionVersion,
-            ),
-            provider,
-        )
-    }
-
     private fun showDictionaryResult(target: MeaningTarget, response: DictionaryLookupResponse) {
         if (response.entries.isEmpty()) {
-            val builder = AlertDialog.Builder(this)
-                .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
-                .setMessage(R.string.dictionary_no_result)
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.translation_title, target.sourceText))
+                .setMessage(R.string.translation_no_result)
                 .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
                 .setNegativeButton(android.R.string.cancel, null)
-            if (response.resultType != LookupResultType.TRANSLATION) {
-                builder.setNeutralButton(R.string.online_translation) { _, _ -> startOnlineTranslation(target) }
-            }
-            builder.show()
+                .show()
             return
         }
         val padding = 24.dp
@@ -2665,61 +2580,33 @@ class MainActivity : Activity() {
                 }
             })
         }
-        if (response.attributions.any { it.displayName == "CC-CEDICT" }) {
-            content.addView(TextView(this).apply {
-                setPadding(0, 16.dp, 0, 8.dp)
-                text = getString(R.string.dictionary_cc_cedict_attribution)
-                contentDescription = getString(R.string.dictionary_cc_cedict_attribution_description)
-                setOnClickListener { openWebPage(CC_CEDICT_URL) }
-            })
-        }
-        if (response.resultType == LookupResultType.TRANSLATED_DICTIONARY) {
-            content.addView(ImageView(this).apply {
-                setImageResource(R.drawable.powered_by_google_translate)
-                adjustViewBounds = true
-                contentDescription = getString(R.string.dictionary_google_attribution)
-                setOnClickListener { openWebPage(GOOGLE_TRANSLATE_URL) }
-            }, LinearLayout.LayoutParams(176.dp, 16.dp).apply {
-                topMargin = 8.dp
-            })
-            content.addView(TextView(this).apply {
-                setPadding(0, 8.dp, 0, 0)
-                textSize = 12f
-                text = getString(R.string.dictionary_machine_translation_notice)
-            })
-        }
-        if (response.resultType == LookupResultType.TRANSLATION) {
-            val isAzure = response.providerId == "azure-translator-f0"
-            content.addView(TextView(this).apply {
-                setPadding(0, 16.dp, 0, 8.dp)
-                text = getString(
-                    if (isAzure) R.string.azure_translation_attribution
-                    else R.string.online_translation_attribution,
-                )
-                contentDescription = getString(
-                    if (isAzure) R.string.azure_translation_attribution_description
-                    else R.string.online_translation_attribution_description,
-                )
-                setOnClickListener { openWebPage(if (isAzure) AZURE_TRANSLATOR_URL else MYMEMORY_URL) }
-            })
-            content.addView(TextView(this).apply {
-                textSize = 12f
-                text = getString(
-                    if (isAzure) R.string.azure_translation_notice
-                    else R.string.online_translation_notice,
-                )
-            })
-        }
+        val isAzure = response.providerId == "azure-translator-f0"
+        content.addView(TextView(this).apply {
+            setPadding(0, 16.dp, 0, 8.dp)
+            text = getString(
+                if (isAzure) R.string.azure_translation_attribution
+                else R.string.online_translation_attribution,
+            )
+            contentDescription = getString(
+                if (isAzure) R.string.azure_translation_attribution_description
+                else R.string.online_translation_attribution_description,
+            )
+            setOnClickListener { openWebPage(if (isAzure) AZURE_TRANSLATOR_URL else MYMEMORY_URL) }
+        })
+        content.addView(TextView(this).apply {
+            textSize = 12f
+            text = getString(
+                if (isAzure) R.string.azure_translation_notice
+                else R.string.online_translation_notice,
+            )
+        })
         val scroll = ScrollView(this).apply { addView(content) }
-        val builder = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.translation_title, target.sourceText))
             .setView(scroll)
             .setPositiveButton(R.string.meaning_add) { _, _ -> saveLookupMeanings(target, response) }
             .setNegativeButton(android.R.string.cancel, null)
-        if (response.resultType != LookupResultType.TRANSLATION) {
-            builder.setNeutralButton(R.string.online_translation) { _, _ -> startOnlineTranslation(target) }
-        }
-        builder.show()
+            .show()
     }
 
     private fun saveLookupMeanings(target: MeaningTarget, response: DictionaryLookupResponse) {
@@ -2755,7 +2642,9 @@ class MainActivity : Activity() {
                 )
             }
         }) {
-            if (selectionRequestGate.isCurrent(target.selectionVersion)) showSelectedMeanings()
+            if (selectionRequestGate.isCurrent(target.selectionVersion)) {
+                selectionGestureController?.cancelSelection()
+            }
         }
     }
 
@@ -2867,7 +2756,9 @@ class MainActivity : Activity() {
                                 error.message ?: getString(R.string.unknown_error),
                             ),
                         )
-                        .setPositiveButton(R.string.online_translation) { _, _ ->
+                        .setPositiveButton(
+                            if (isAzure) R.string.azure_translation else R.string.mymemory_translation,
+                        ) { _, _ ->
                             if (isAzure) {
                                 AzureTranslatorCredentialStore(applicationContext).load()?.let { saved ->
                                     requestAzureTranslation(target, saved)
@@ -2888,9 +2779,11 @@ class MainActivity : Activity() {
         }
         dictionaryLookupCoordinator = coordinator
         dictionaryProgressDialog = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
-            .setMessage(R.string.online_translation_progress)
-            .setNegativeButton(R.string.dictionary_lookup_cancel) { _, _ -> cancelDictionaryLookup() }
+            .setTitle(getString(R.string.translation_title, target.sourceText))
+            .setMessage(
+                if (isAzure) R.string.azure_translation_progress else R.string.online_translation_progress,
+            )
+            .setNegativeButton(R.string.translation_cancel) { _, _ -> cancelDictionaryLookup() }
             .setOnCancelListener { cancelDictionaryLookup() }
             .show()
         coordinator.request(
@@ -2904,22 +2797,6 @@ class MainActivity : Activity() {
             ),
             provider,
         )
-    }
-
-    private fun showDictionaryFailure(target: MeaningTarget, error: Throwable) {
-        Log.e(MEANING_TAG, "dictionary lookup failed", error)
-        AlertDialog.Builder(this)
-            .setTitle(R.string.dictionary_lookup_failed)
-            .setMessage(getString(R.string.dictionary_lookup_failed_message, error.cause?.message ?: error.message ?: getString(R.string.unknown_error)))
-            .setPositiveButton(R.string.dictionary_retry_any_network) { _, _ ->
-                saveDictionaryDownloadPolicy(DICTIONARY_POLICY_ANY_NETWORK)
-                dictionaryProvider?.close()
-                dictionaryProvider = null
-                requestDictionaryLookup(target, wifiOnly = false)
-            }
-            .setNeutralButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
     }
 
     private fun cancelDictionaryLookup() {
@@ -2989,7 +2866,9 @@ class MainActivity : Activity() {
                     updatedAtEpochMillis = now,
                 )
                 updateUserMeanings({ it + value }) {
-                    if (selectionRequestGate.isCurrent(target.selectionVersion)) showSelectedMeanings()
+                    if (selectionRequestGate.isCurrent(target.selectionVersion)) {
+                        selectionGestureController?.cancelSelection()
+                    }
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -3058,7 +2937,7 @@ class MainActivity : Activity() {
                     }
                 }) {
                     if (target != null && selectionRequestGate.isCurrent(target.selectionVersion)) {
-                        showSelectedMeanings()
+                        selectionGestureController?.cancelSelection()
                     } else {
                         showVocabulary()
                     }
@@ -3076,7 +2955,7 @@ class MainActivity : Activity() {
             .setPositiveButton(R.string.meaning_delete) { _, _ ->
                 updateUserMeanings({ meanings -> meanings.filterNot { it.id == value.id } }) {
                     if (target != null && selectionRequestGate.isCurrent(target.selectionVersion)) {
-                        showSelectedMeanings()
+                        selectionGestureController?.cancelSelection()
                     } else {
                         showVocabulary()
                     }
@@ -3455,8 +3334,6 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         cancelDictionaryLookup()
-        dictionaryProvider?.close()
-        dictionaryProvider = null
         cancelActiveSearch()
         activeImportCancellation?.cancel()
         activeImportCancellation = null
@@ -3564,12 +3441,7 @@ class MainActivity : Activity() {
         const val STYLE_LINE_MIN = 100
         const val STYLE_LINE_MAX = 180
         const val DICTIONARY_PREFERENCES = "dictionary"
-        const val DICTIONARY_DOWNLOAD_POLICY = "model_download_policy"
-        const val DICTIONARY_POLICY_WIFI = "wifi"
-        const val DICTIONARY_POLICY_ANY_NETWORK = "any_network"
         const val MYMEMORY_CONSENT = "mymemory_consent"
-        const val CC_CEDICT_URL = "https://www.mdbg.net/chinese/dictionary?page=cc-cedict"
-        const val GOOGLE_TRANSLATE_URL = "https://translate.google.com/"
         const val MYMEMORY_URL = "https://mymemory.translated.net/"
         const val AZURE_TRANSLATOR_URL = "https://azure.microsoft.com/products/ai-services/ai-translator/"
         val SELECTION_DELAYS = setOf(250, 350, 450)

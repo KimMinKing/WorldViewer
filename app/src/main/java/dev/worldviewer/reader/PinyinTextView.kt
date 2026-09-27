@@ -9,7 +9,7 @@ import dev.worldviewer.pinyin.PinyinReading
 import dev.worldviewer.selection.SelectionRange
 
 /** Draws ruby after the source layout is complete, so pinyin never changes source line breaks. */
-// AppCompat is an incidental ML Kit dependency; changing this view would invalidate renderer measurements.
+// This intentionally uses the platform TextView; changing it would invalidate renderer measurements.
 @SuppressLint("AppCompatCustomView")
 class PinyinTextView(context: Context) : TextView(context) {
     private val rubyPaint = Paint()
