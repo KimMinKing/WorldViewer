@@ -10,6 +10,8 @@ import dev.worldviewer.reader.ImportedText
 import dev.worldviewer.reader.MeaningScope
 import dev.worldviewer.reader.ReadingPosition
 import dev.worldviewer.reader.ReadingPositionStore
+import dev.worldviewer.reader.ReadingTimeKey
+import dev.worldviewer.reader.ReadingTimeStore
 import dev.worldviewer.reader.UserAnnotation
 import dev.worldviewer.reader.UserAnnotationStore
 import dev.worldviewer.reader.UserMeaning
@@ -27,6 +29,25 @@ import java.security.MessageDigest
 class WorldViewerRestoreTest {
     @get:Rule
     val temporary = TemporaryFolder()
+
+    @Test
+    fun `reading time survives backup restore and conflicts keep current data`() {
+        val source = dataRoot("source-time", meaning = "강호")
+        val key = ReadingTimeKey("a".repeat(64), 20_000)
+        ReadingTimeStore(File(source, "reading-time")).save(mapOf(key to 90_000L))
+        val archive = temporary.newFile("time.wvb")
+        val backup = WorldViewerBackup(source)
+        backup.create(archive, includeOriginalTexts = false, createdAtEpochMillis = 1)
+        assertTrue(backup.inspect(archive).entries.any { it.category == BackupCategory.READING_TIME })
+        val target = temporary.newFolder("target-time")
+        val timeStore = ReadingTimeStore(File(target, "reading-time"))
+        timeStore.save(mapOf(key to 30_000L))
+
+        WorldViewerRestore(target).restore(archive, RestoreConflictPolicy.KEEP_EXISTING)
+        assertEquals(30_000L, timeStore.load()?.get(key))
+        WorldViewerRestore(target).restore(archive, RestoreConflictPolicy.REPLACE_EXISTING)
+        assertEquals(90_000L, timeStore.load()?.get(key))
+    }
 
     @Test
     fun `new data restores after preview`() {

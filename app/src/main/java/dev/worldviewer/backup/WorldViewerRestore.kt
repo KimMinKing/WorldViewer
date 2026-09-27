@@ -5,6 +5,7 @@ import dev.worldviewer.reader.ImportMetadataStore
 import dev.worldviewer.reader.ManualChapterStore
 import dev.worldviewer.reader.ReaderStyleStore
 import dev.worldviewer.reader.ReadingPositionStore
+import dev.worldviewer.reader.ReadingTimeStore
 import dev.worldviewer.reader.UserAnnotationStore
 import dev.worldviewer.reader.UserMeaningStore
 import java.io.BufferedInputStream
@@ -297,6 +298,8 @@ class WorldViewerRestore(
                     }
                     BackupCategory.READER_STYLE ->
                         checkNotNull(ReaderStyleStore(File(staging, "reader-styles")).load())
+                    BackupCategory.READING_TIME ->
+                        checkNotNull(ReadingTimeStore(File(staging, "reading-time")).load())
                     BackupCategory.MANUAL_CHAPTER -> {
                         val document = entry.relativePath.substringAfter('/').substringBefore('.')
                         ManualChapterStore(File(staging, "manual-chapters")).load(document)

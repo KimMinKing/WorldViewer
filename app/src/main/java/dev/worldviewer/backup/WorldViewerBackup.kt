@@ -21,6 +21,7 @@ enum class BackupCategory {
     IMPORT_METADATA,
     BOOK_CATALOG,
     READING_POSITION,
+    READING_TIME,
     READER_STYLE,
     MANUAL_CHAPTER,
     USER_MEANING,
@@ -172,6 +173,7 @@ class WorldViewerBackup(
             addExact("imports/current.meta", BackupCategory.IMPORT_METADATA)
             addExact("library/books.catalog", BackupCategory.BOOK_CATALOG)
             addExact("reader-styles/reader-styles.bin", BackupCategory.READER_STYLE)
+            addExact("reading-time/reading-time.bin", BackupCategory.READING_TIME)
             addExact("user-meanings/user-meanings.dat", BackupCategory.USER_MEANING)
             addExact("user-annotations/user-annotations.dat", BackupCategory.USER_ANNOTATION)
             addMatching("reading-positions", POSITION_FILE, BackupCategory.READING_POSITION)
@@ -282,6 +284,7 @@ class WorldViewerBackup(
         path == "imports/current.meta" -> BackupCategory.IMPORT_METADATA
         path == "library/books.catalog" -> BackupCategory.BOOK_CATALOG
         path == "reader-styles/reader-styles.bin" -> BackupCategory.READER_STYLE
+        path == "reading-time/reading-time.bin" -> BackupCategory.READING_TIME
         path == "user-meanings/user-meanings.dat" -> BackupCategory.USER_MEANING
         path == "user-annotations/user-annotations.dat" -> BackupCategory.USER_ANNOTATION
         path.startsWith("imports/") && ORIGINAL_FILE.matches(path.substringAfter('/')) ->

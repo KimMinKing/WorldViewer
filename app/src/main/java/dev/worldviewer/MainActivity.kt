@@ -6,11 +6,17 @@ import android.app.AlertDialog
 import android.content.pm.ActivityInfo
 import android.content.res.ColorStateList
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.os.storage.StorageManager
 import android.provider.OpenableColumns
@@ -86,6 +92,9 @@ import dev.worldviewer.reader.PinyinDisplayMode
 import dev.worldviewer.reader.ReadingPosition
 import dev.worldviewer.reader.ReadingPositionResolver
 import dev.worldviewer.reader.ReadingPositionStore
+import dev.worldviewer.reader.ReadingTimeKey
+import dev.worldviewer.reader.ReadingTimeLedger
+import dev.worldviewer.reader.ReadingTimeStore
 import dev.worldviewer.reader.ReadingProgress
 import dev.worldviewer.reader.ReaderStyle
 import dev.worldviewer.reader.ReaderStyleColors
@@ -128,6 +137,8 @@ import java.text.DateFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.time.LocalDate
+import java.time.ZoneId
 
 class MainActivity : Activity() {
     private val blockExecutor = Executors.newSingleThreadExecutor()
@@ -135,6 +146,33 @@ class MainActivity : Activity() {
     private val positionExecutor = Executors.newSingleThreadExecutor()
     private val backupExecutor = Executors.newSingleThreadExecutor()
     private val dictionaryExecutor = Executors.newSingleThreadExecutor()
+    private val readingTimeHandler = Handler(Looper.getMainLooper())
+    private var readingTimeLedger: ReadingTimeLedger? = null
+    private var readingTimeLoadError: Throwable? = null
+    @Volatile private var readingTimeSaveError: Throwable? = null
+    private var readingTimeResumed = false
+    private var readingTimeWindowFocused = false
+    private var readingTimeScreenOn = true
+    private var readingTimeActiveBook: String? = null
+    private var screenReceiverRegistered = false
+    private val readingTimeTick = object : Runnable {
+        override fun run() {
+            if (readingTimeActiveBook == null) return
+            syncReadingTimer()
+            if (readingTimeActiveBook != null) {
+                checkpointReadingTime()
+                readingTimeHandler.postDelayed(this, READING_TIME_TICK_MS)
+            }
+        }
+    }
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_OFF || intent?.action == Intent.ACTION_SCREEN_ON) {
+                readingTimeScreenOn = intent.action == Intent.ACTION_SCREEN_ON
+                syncReadingTimer()
+            }
+        }
+    }
     private lateinit var rootLayout: FrameLayout
     private lateinit var bookshelfHome: LinearLayout
     private lateinit var bookshelfItems: ListView
@@ -600,6 +638,10 @@ class MainActivity : Activity() {
         }
         bookshelfHome.addView(bookshelfActions)
         bookshelfHome.addView(Button(this).apply {
+            text = getString(R.string.reading_time)
+            setOnClickListener { showReadingTime() }
+        })
+        bookshelfHome.addView(Button(this).apply {
             text = getString(R.string.bookshelf_add_folder)
             setOnClickListener { openFolderPicker() }
         })
@@ -637,6 +679,31 @@ class MainActivity : Activity() {
         }
         setContentView(root)
         updateReaderBackHandling()
+        readingTimeScreenOn = getSystemService(PowerManager::class.java).isInteractive
+        val screenFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenReceiver, screenFilter, Context.RECEIVER_NOT_EXPORTED)
+        else {
+            @Suppress("DEPRECATION")
+            registerReceiver(screenReceiver, screenFilter)
+        }
+        screenReceiverRegistered = true
+        backupExecutor.execute {
+            val result = runCatching {
+                readingTimeStore().cleanStalePartials()
+                readingTimeStore().load().orEmpty()
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onSuccess { readingTimeLedger = ReadingTimeLedger(it); syncReadingTimer() }
+                    .onFailure { error ->
+                        readingTimeLoadError = error
+                        Log.e(READING_TIME_TAG, "saved reading time unavailable; existing file preserved", error)
+                    }
+            }
+        }
 
         blockExecutor.execute {
             val preparationStarted = SystemClock.elapsedRealtime()
@@ -754,6 +821,7 @@ class MainActivity : Activity() {
                 applyReaderTheme(resolvedStyle)
                 val adapter = TextBlockAdapter(blockSource, renderer, resolvedStyle)
                 currentDocumentSha256 = metadata?.sha256
+                syncReadingTimer()
                 textBlockAdapter = adapter
                 reader.adapter = adapter
                 adapter.setPinyinMode(pinyinMode)
@@ -1157,6 +1225,7 @@ class MainActivity : Activity() {
     private fun beginBackupOperation(message: String, isRestore: Boolean) {
         backupOperationInProgress = true
         restoreInProgress = isRestore
+        syncReadingTimer()
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
         statusView.text = message
         backupOperationDialog = AlertDialog.Builder(this)
@@ -1174,6 +1243,7 @@ class MainActivity : Activity() {
             restoreInProgress = false
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
+        syncReadingTimer()
     }
 
     private fun showBackupRestoreFailure(title: Int, error: Throwable) {
@@ -1199,6 +1269,7 @@ class MainActivity : Activity() {
         setReaderChromeVisible(false)
         reader.visibility = View.INVISIBLE
         bookshelfHome.visibility = View.VISIBLE
+        syncReadingTimer()
         rootLayout.setBackgroundColor(Color.rgb(250, 248, 243))
         applySystemBarAppearance(false)
         updateReaderBackHandling()
@@ -1266,6 +1337,7 @@ class MainActivity : Activity() {
         }
         bookshelfHome.visibility = View.GONE
         reader.visibility = View.VISIBLE
+        syncReadingTimer()
         rootLayout.setBackgroundColor(currentReaderStyle.resolvedBackgroundColor())
         applySystemBarAppearance(hasDarkReaderBackground(currentReaderStyle))
         updateReaderBackHandling()
@@ -2587,11 +2659,13 @@ class MainActivity : Activity() {
             listOf(
                 getString(R.string.vocabulary),
                 getString(R.string.backup_restore),
+                getString(R.string.reading_time),
             )
         } else {
             listOf(
                 getString(R.string.vocabulary),
                 getString(R.string.backup_restore),
+                getString(R.string.reading_time),
                 getString(R.string.bookmark_here),
                 getString(R.string.annotations),
             )
@@ -2602,8 +2676,9 @@ class MainActivity : Activity() {
                 when (which) {
                     0 -> showVocabulary()
                     1 -> showBackupRestoreMenu()
-                    2 -> addBookmarkHere()
-                    3 -> showAnnotations()
+                    2 -> showReadingTime()
+                    3 -> addBookmarkHere()
+                    4 -> showAnnotations()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -3773,6 +3848,125 @@ class MainActivity : Activity() {
         else showBookshelf()
     }
 
+    private fun readingTimeStore(): ReadingTimeStore = ReadingTimeStore(File(filesDir, "reading-time"))
+
+    private fun persistReadingTimeSnapshot() {
+        val snapshot = readingTimeLedger?.snapshot() ?: return
+        backupExecutor.execute {
+            runCatching { readingTimeStore().save(snapshot) }
+                .onSuccess { readingTimeSaveError = null }
+                .onFailure { error ->
+                    readingTimeSaveError = error
+                    Log.e(READING_TIME_TAG, "reading time save failed", error)
+                }
+        }
+    }
+
+    private fun checkpointReadingTime() {
+        val changed = readingTimeLedger?.checkpoint(
+            SystemClock.elapsedRealtime(), System.currentTimeMillis(), ZoneId.systemDefault(),
+        ) ?: false
+        if (changed) persistReadingTimeSnapshot()
+    }
+
+    private fun syncReadingTimer() {
+        val requestedBook = currentDocumentSha256?.takeIf {
+            readingTimeLedger != null && readingTimeResumed && readingTimeWindowFocused &&
+                readingTimeScreenOn && getSystemService(PowerManager::class.java).isInteractive &&
+                ::reader.isInitialized && reader.visibility == View.VISIBLE &&
+                ::bookshelfHome.isInitialized && bookshelfHome.visibility != View.VISIBLE &&
+                !backupOperationInProgress && !restoreInProgress
+        }
+        if (requestedBook == readingTimeActiveBook) return
+        readingTimeHandler.removeCallbacks(readingTimeTick)
+        if (readingTimeActiveBook != null) {
+            if (readingTimeLedger?.stop(
+                    SystemClock.elapsedRealtime(), System.currentTimeMillis(), ZoneId.systemDefault(),
+                ) == true
+            ) persistReadingTimeSnapshot()
+        }
+        readingTimeActiveBook = requestedBook
+        if (requestedBook != null) {
+            readingTimeLedger?.start(
+                requestedBook, SystemClock.elapsedRealtime(), System.currentTimeMillis(), ZoneId.systemDefault(),
+            )
+            readingTimeHandler.postDelayed(readingTimeTick, READING_TIME_TICK_MS)
+        }
+    }
+
+    private fun showReadingTime() {
+        if (readingTimeLoadError != null) {
+            AlertDialog.Builder(this).setTitle(R.string.reading_time)
+                .setMessage(R.string.reading_time_load_failed)
+                .setPositiveButton(android.R.string.ok, null).show()
+            return
+        }
+        val ledger = readingTimeLedger
+        if (ledger == null) {
+            Toast.makeText(this, R.string.reading_time_loading, Toast.LENGTH_SHORT).show()
+            return
+        }
+        checkpointReadingTime()
+        val totals = ledger.snapshot()
+        val today = LocalDate.now().toEpochDay()
+        backupExecutor.execute {
+            val names = runCatching { bookCatalogStore().load()?.books.orEmpty() }
+                .getOrDefault(emptyList()).associate { it.bookId to it.displayName }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                val byBook = totals.entries.groupBy { it.key.bookId }
+                val message = buildString {
+                    append(getString(R.string.reading_time_summary,
+                        formatReadingDuration(totals.filterKeys { it.epochDay == today }.values.sum()),
+                        formatReadingDuration(totals.values.sum())))
+                    byBook.entries.sortedByDescending { (_, entries) -> entries.sumOf { it.value } }
+                        .forEach { (bookId, entries) ->
+                            append("\n\n")
+                            append(names[bookId] ?: bookId.take(12))
+                            append("\n")
+                            append(getString(R.string.reading_time_book,
+                                formatReadingDuration(entries.filter { it.key.epochDay == today }.sumOf { it.value }),
+                                formatReadingDuration(entries.sumOf { it.value })))
+                        }
+                    if (byBook.isEmpty()) append("\n\n${getString(R.string.reading_time_empty)}")
+                    if (readingTimeSaveError != null) append("\n\n${getString(R.string.reading_time_save_failed)}")
+                }
+                AlertDialog.Builder(this).setTitle(R.string.reading_time).setMessage(message)
+                    .setPositiveButton(android.R.string.ok, null).show()
+            }
+        }
+    }
+
+    private fun formatReadingDuration(millis: Long): String {
+        val seconds = millis / 1_000
+        val hours = seconds / 3_600
+        val minutes = (seconds % 3_600) / 60
+        val remainder = seconds % 60
+        return when {
+            hours > 0 -> getString(R.string.reading_time_hours_minutes, hours, minutes)
+            minutes > 0 -> getString(R.string.reading_time_minutes_seconds, minutes, remainder)
+            else -> getString(R.string.reading_time_seconds, remainder)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        readingTimeResumed = true
+        syncReadingTimer()
+    }
+
+    override fun onPause() {
+        readingTimeResumed = false
+        syncReadingTimer()
+        super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        readingTimeWindowFocused = hasFocus
+        syncReadingTimer()
+    }
+
     override fun onStop() {
         if (!restoreInProgress) persistReadingPosition()
         super.onStop()
@@ -3789,6 +3983,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        readingTimeHandler.removeCallbacks(readingTimeTick)
+        if (screenReceiverRegistered) unregisterReceiver(screenReceiver)
         if (Build.VERSION.SDK_INT >= 33) {
             readerBackCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
             readerBackCallback = null
@@ -3855,6 +4051,7 @@ class MainActivity : Activity() {
     }
 
     private companion object {
+        const val READING_TIME_TICK_MS = 15_000L
         const val MAX_BLOCK_UTF16 = 768
         const val MAX_TRANSLATION_SELECTION_UTF16 = AzureTranslationProvider.MAX_REQUEST_CHARACTERS * 2
         const val REQUEST_OPEN_TXT = 1001
@@ -3888,6 +4085,7 @@ class MainActivity : Activity() {
         const val RESTORE_TAG = "WorldViewerRestore"
         const val CATALOG_TAG = "WorldViewerCatalog"
         const val STYLE_TAG = "WorldViewerStyle"
+        const val READING_TIME_TAG = "WorldViewerReadingTime"
         const val CHAPTER_TAG = "WorldViewerChapter"
         const val SEARCH_TAG = "WorldViewerSearch"
         const val MEANING_TAG = "WorldViewerMeaning"

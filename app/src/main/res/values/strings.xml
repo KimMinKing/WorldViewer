@@ -141,6 +141,16 @@
     <string name="vocabulary_empty">직접 저장한 뜻이 없습니다.</string>
     <string name="vocabulary_item">%1$s · %2$s\n%3$s</string>
     <string name="reader_tools">도구</string>
+    <string name="reading_time">독서 기록</string>
+    <string name="reading_time_loading">독서 기록을 불러오는 중입니다.</string>
+    <string name="reading_time_load_failed">독서 기록을 읽지 못했습니다. 기존 기록은 보존했습니다.</string>
+    <string name="reading_time_save_failed">독서 기록을 저장하지 못했습니다. 저장 공간을 확인하세요.</string>
+    <string name="reading_time_empty">아직 기록된 독서 시간이 없습니다.</string>
+    <string name="reading_time_summary">오늘 %1$s · 전체 %2$s</string>
+    <string name="reading_time_book">오늘 %1$s · 전체 %2$s</string>
+    <string name="reading_time_hours_minutes">%1$d시간 %2$d분</string>
+    <string name="reading_time_minutes_seconds">%1$d분 %2$d초</string>
+    <string name="reading_time_seconds">%1$d초</string>
     <string name="reader_tools_description">단어장, 책갈피와 주석 도구</string>
     <string name="reader_controls_show">독서 도구 열기</string>
     <string name="reader_controls_hide">독서 도구 숨기기</string>
