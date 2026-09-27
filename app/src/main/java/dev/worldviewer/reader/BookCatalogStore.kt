@@ -59,7 +59,11 @@ class BookCatalogStore(private val directory: File) {
         }
     }
 
-    fun reconcileCurrent(legacy: ImportMetadata, nowEpochMillis: Long): BookCatalog {
+    fun reconcileCurrent(
+        legacy: ImportMetadata,
+        nowEpochMillis: Long,
+        updateLastOpened: Boolean = true,
+    ): BookCatalog {
         require(nowEpochMillis >= 0)
         val existing = load() ?: BookCatalog(currentBookId = null, books = emptyList())
         val previous = existing.books.firstOrNull { it.bookId == legacy.sha256 }
@@ -71,15 +75,27 @@ class BookCatalogStore(private val directory: File) {
             byteCount = legacy.byteCount,
             encoding = legacy.encoding,
             addedAtEpochMillis = previous?.addedAtEpochMillis ?: nowEpochMillis,
-            lastOpenedAtEpochMillis = nowEpochMillis,
+            lastOpenedAtEpochMillis = if (updateLastOpened) nowEpochMillis
+                else previous?.lastOpenedAtEpochMillis ?: nowEpochMillis,
         )
         val reconciled = BookCatalog(
             currentBookId = current.bookId,
             books = (existing.books.filterNot { it.bookId == current.bookId } + current)
                 .sortedWith(compareByDescending<BookCatalogEntry> { it.lastOpenedAtEpochMillis }.thenBy { it.bookId }),
         )
-        save(reconciled)
+        if (reconciled != existing) save(reconciled)
         return reconciled
+    }
+
+    fun markOpened(bookId: String, nowEpochMillis: Long): BookCatalog {
+        require(nowEpochMillis >= 0)
+        val existing = load() ?: throw TxtImportException("책 목록을 찾을 수 없습니다.")
+        if (existing.currentBookId != bookId) throw TxtImportException("현재 책이 아닙니다.")
+        val updated = existing.copy(books = existing.books.map { book ->
+            if (book.bookId == bookId) book.copy(lastOpenedAtEpochMillis = nowEpochMillis) else book
+        }.sortedWith(compareByDescending<BookCatalogEntry> { it.lastOpenedAtEpochMillis }.thenBy { it.bookId }))
+        save(updated)
+        return updated
     }
 
     fun removeNonCurrent(bookId: String): BookCatalog {

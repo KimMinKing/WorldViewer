@@ -4,6 +4,9 @@
     <string name="reader_loading">worldviewer %1$s · 독서 fixture 준비 중</string>
     <string name="reader_ready">%1$s · %2$s · %3$d블록 · UTF-16 %4$d자</string>
     <string name="bookshelf">책장</string>
+    <string name="bookshelf_loading">책장을 불러오는 중입니다.</string>
+    <string name="bookshelf_settings">독서 설정</string>
+    <string name="bookshelf_manage">책장 관리</string>
     <string name="bookshelf_description">가져온 TXT 책 목록 열기</string>
     <string name="bookshelf_empty">책장에 추가한 TXT가 없습니다.</string>
     <string name="bookshelf_current">현재 · %1$s</string>

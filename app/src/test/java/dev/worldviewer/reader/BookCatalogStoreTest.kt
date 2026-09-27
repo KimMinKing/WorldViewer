@@ -55,6 +55,28 @@ class BookCatalogStoreTest {
     }
 
     @Test
+    fun `opening bookshelf preserves recency until reader is entered`() {
+        val directory = Files.createTempDirectory("worldviewer-catalog-recency").toFile()
+        val store = BookCatalogStore(directory)
+        val first = ImportMetadata("$hashA.original", "첫째.txt", hashA, 10, "UTF-8")
+        val second = ImportMetadata("$hashB.original", "둘째.txt", hashB, 20, "UTF-8")
+        store.reconcileCurrent(first, 100)
+        store.reconcileCurrent(second, 200)
+        store.reconcileCurrent(first, 300)
+        val catalogFile = directory.resolve(BookCatalogStore.FILE_NAME)
+        val before = catalogFile.readBytes()
+
+        val shelf = store.reconcileCurrent(first, 400, updateLastOpened = false)
+        assertEquals(listOf(hashA, hashB), shelf.books.map(BookCatalogEntry::bookId))
+        assertEquals(300, shelf.books[0].lastOpenedAtEpochMillis)
+        assertTrue(before.contentEquals(catalogFile.readBytes()))
+
+        val reading = store.markOpened(hashA, 500)
+        assertEquals(500, reading.books[0].lastOpenedAtEpochMillis)
+        assertEquals(reading, store.load())
+    }
+
+    @Test
     fun `failed replacement keeps the prior catalog and removes the partial`() {
         val directory = Files.createTempDirectory("worldviewer-catalog-failure").toFile()
         val store = BookCatalogStore(directory)

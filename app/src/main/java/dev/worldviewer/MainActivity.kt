@@ -1,6 +1,7 @@
 package dev.worldviewer
 
 import android.app.Activity
+import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.pm.ActivityInfo
 import android.content.res.ColorStateList
@@ -23,6 +24,8 @@ import android.view.Gravity
 import android.view.GestureDetector
 import android.view.View
 import android.view.ViewGroup
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
@@ -124,6 +127,12 @@ class MainActivity : Activity() {
     private val backupExecutor = Executors.newSingleThreadExecutor()
     private val dictionaryExecutor = Executors.newSingleThreadExecutor()
     private lateinit var rootLayout: FrameLayout
+    private lateinit var bookshelfHome: LinearLayout
+    private lateinit var bookshelfItems: ListView
+    private lateinit var bookshelfEmptyView: TextView
+    private lateinit var bookshelfStatusView: TextView
+    private var bookshelfSnapshot: BookshelfSnapshot? = null
+    private var readerBackCallback: OnBackInvokedCallback? = null
     private lateinit var readerChrome: LinearLayout
     private lateinit var selectionControls: LinearLayout
     private lateinit var reader: RecyclerView
@@ -549,12 +558,70 @@ class MainActivity : Activity() {
                 Gravity.BOTTOM,
             ),
         )
+        val startOnBookshelf = savedInstanceState?.getBoolean(STATE_BOOKSHELF_VISIBLE)
+            ?: !intent.getBooleanExtra(EXTRA_OPEN_READER, false)
+        bookshelfHome = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            isFocusable = true
+            setPadding(horizontalPadding, 16.dp, horizontalPadding, 8.dp)
+            setBackgroundColor(Color.rgb(250, 248, 243))
+            visibility = if (startOnBookshelf) View.VISIBLE else View.GONE
+        }
+        bookshelfHome.addView(TextView(this).apply {
+            text = getString(R.string.bookshelf)
+            textSize = 26f
+            setTextColor(Color.rgb(35, 33, 29))
+            setPadding(0, 0, 0, 12.dp)
+        })
+        val bookshelfActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun bookshelfAction(label: Int, action: () -> Unit) {
+            bookshelfActions.addView(Button(this).apply {
+                text = getString(label)
+                textSize = 12f
+                setOnClickListener { action() }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        bookshelfAction(R.string.open_txt, ::openTxtPicker)
+        bookshelfAction(R.string.bookshelf_settings, ::showReaderStyle)
+        bookshelfAction(R.string.bookshelf_manage) {
+            bookshelfSnapshot?.let(::showBookshelfDialog)
+        }
+        bookshelfHome.addView(bookshelfActions)
+        bookshelfStatusView = TextView(this).apply {
+            text = getString(R.string.bookshelf_loading)
+            setPadding(0, 12.dp, 0, 12.dp)
+        }
+        bookshelfHome.addView(bookshelfStatusView)
+        bookshelfEmptyView = TextView(this).apply {
+            text = getString(R.string.bookshelf_empty)
+            textSize = 18f
+            visibility = View.GONE
+            setPadding(0, 24.dp, 0, 0)
+        }
+        bookshelfHome.addView(bookshelfEmptyView)
+        bookshelfItems = ListView(this).apply {
+            setOnItemClickListener { _, _, position, _ ->
+                val book = bookshelfSnapshot?.catalog?.books?.getOrNull(position) ?: return@setOnItemClickListener
+                if (book.bookId == currentDocumentSha256) openReaderFromBookshelf()
+                else openCatalogBook(book)
+            }
+        }
+        bookshelfHome.addView(bookshelfItems, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f,
+        ))
+        root.addView(bookshelfHome, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
+        ))
+        if (startOnBookshelf) reader.visibility = View.INVISIBLE
         root.setOnApplyWindowInsetsListener { view, insets ->
             val bars = insets.systemBarInsets()
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
         setContentView(root)
+        updateReaderBackHandling()
 
         blockExecutor.execute {
             val preparationStarted = SystemClock.elapsedRealtime()
@@ -591,7 +658,7 @@ class MainActivity : Activity() {
                     throw IllegalStateException("최근 문서의 원본 검증값이 일치하지 않습니다.")
                 }
                 runCatching {
-                    bookCatalogStore().reconcileCurrent(metadata, System.currentTimeMillis())
+                    bookCatalogStore().reconcileCurrent(metadata, System.currentTimeMillis(), updateLastOpened = false)
                 }.onFailure { error ->
                     Log.e(CATALOG_TAG, "catalog reconciliation deferred", error)
                 }
@@ -785,6 +852,7 @@ class MainActivity : Activity() {
                 refreshHighlights()
             }
         }
+        if (startOnBookshelf) showBookshelf()
     }
 
     private fun handleReaderChromeClick() {
@@ -1101,11 +1169,22 @@ class MainActivity : Activity() {
     }.getOrElse { path.usableSpace }
 
     private fun showBookshelf() {
+        if (bookshelfHome.visibility != View.VISIBLE) {
+            persistReadingPosition()
+            selectionGestureController?.cancelSelection()
+        }
+        setReaderChromeVisible(false)
+        reader.visibility = View.INVISIBLE
+        bookshelfHome.visibility = View.VISIBLE
+        updateReaderBackHandling()
+        bookshelfStatusView.text = getString(R.string.bookshelf_loading)
+        bookshelfStatusView.visibility = View.VISIBLE
         bookshelfButton.isEnabled = false
         styleButton.isEnabled = false
         tableOfContentsButton.isEnabled = false
         blockExecutor.execute {
             val result = runCatching {
+                positionExecutor.submit { }.get()
                 val catalog = bookCatalogStore().load() ?: BookCatalog(currentBookId = null, books = emptyList())
                 val progress = catalog.books.mapNotNull { book ->
                     runCatching {
@@ -1128,25 +1207,48 @@ class MainActivity : Activity() {
                 bookshelfButton.isEnabled = activeImportCancellation == null
                 styleButton.isEnabled = activeImportCancellation == null
                 tableOfContentsButton.isEnabled = activeImportCancellation == null && documentUtf16Length > 0
-                result.onSuccess(::showBookshelfDialog)
+                result.onSuccess(::renderBookshelfHome)
                     .onFailure { error -> showLibraryFailure(getString(R.string.bookshelf_load_failed), error) }
             }
         }
     }
 
-    private fun showBookshelfDialog(snapshot: BookshelfSnapshot) {
-        val catalog = snapshot.catalog
-        if (catalog.books.isEmpty()) {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.bookshelf)
-                .setMessage(R.string.bookshelf_empty)
-                .setPositiveButton(R.string.open_txt) { _, _ -> openTxtPicker() }
-                .setNegativeButton(android.R.string.cancel, null)
-                .show()
-            return
+    private fun renderBookshelfHome(snapshot: BookshelfSnapshot) {
+        bookshelfSnapshot = snapshot
+        bookshelfStatusView.visibility = View.GONE
+        bookshelfEmptyView.visibility = if (snapshot.catalog.books.isEmpty()) View.VISIBLE else View.GONE
+        bookshelfItems.adapter = object : ArrayAdapter<CharSequence>(
+            this,
+            android.R.layout.simple_list_item_1,
+            bookshelfLabels(snapshot),
+        ) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                (super.getView(position, convertView, parent) as TextView).apply {
+                    isSingleLine = false
+                    maxLines = 4
+                    textSize = 16f
+                    setPadding(12.dp, 12.dp, 12.dp, 12.dp)
+                }
         }
-        val labels: Array<CharSequence> = catalog.books.map { book ->
-            val title = if (book.bookId == catalog.currentBookId) {
+    }
+
+    private fun openReaderFromBookshelf() {
+        currentDocumentSha256?.let { bookId ->
+            blockExecutor.execute {
+                runCatching { bookCatalogStore().markOpened(bookId, System.currentTimeMillis()) }
+                    .onFailure { error -> Log.e(CATALOG_TAG, "recent book timestamp update failed", error) }
+            }
+        }
+        bookshelfHome.visibility = View.GONE
+        reader.visibility = View.VISIBLE
+        updateReaderBackHandling()
+        reader.requestFocus()
+        if (pinyinMode != PinyinDisplayMode.ORIGINAL) reader.post { requestVisiblePinyin() }
+    }
+
+    private fun bookshelfLabels(snapshot: BookshelfSnapshot): Array<CharSequence> =
+        snapshot.catalog.books.map { book ->
+            val title = if (book.bookId == snapshot.catalog.currentBookId) {
                 getString(R.string.bookshelf_current, book.displayName)
             } else {
                 book.displayName
@@ -1175,6 +1277,19 @@ class MainActivity : Activity() {
                 )
             }
         }.toTypedArray()
+
+    private fun showBookshelfDialog(snapshot: BookshelfSnapshot) {
+        val catalog = snapshot.catalog
+        if (catalog.books.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.bookshelf)
+                .setMessage(R.string.bookshelf_empty)
+                .setPositiveButton(R.string.open_txt) { _, _ -> openTxtPicker() }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+            return
+        }
+        val labels = bookshelfLabels(snapshot)
         var selected = catalog.books.indexOfFirst { it.bookId == catalog.currentBookId }.coerceAtLeast(0)
         var updateActions: () -> Unit = {}
         lateinit var dialog: AlertDialog
@@ -1242,7 +1357,7 @@ class MainActivity : Activity() {
                 if (isDestroyed) return@runOnUiThread
                 result.onSuccess {
                     Log.i(CATALOG_TAG, "opened book=${book.bookId}")
-                    startActivity(Intent(this, MainActivity::class.java))
+                    startActivity(Intent(this, MainActivity::class.java).putExtra(EXTRA_OPEN_READER, true))
                     finish()
                 }.onFailure { error ->
                     finishLibraryOperation()
@@ -1287,6 +1402,8 @@ class MainActivity : Activity() {
         searchButton.isEnabled = false
         openTxtButton.isEnabled = false
         statusView.text = message
+        bookshelfStatusView.text = message
+        bookshelfStatusView.visibility = View.VISIBLE
     }
 
     private fun finishLibraryOperation() {
@@ -1304,6 +1421,7 @@ class MainActivity : Activity() {
             error.message ?: getString(R.string.unknown_error),
         )
         Log.e(CATALOG_TAG, title, error)
+        bookshelfStatusView.text = getString(R.string.bookshelf_operation_failed, error.message ?: getString(R.string.unknown_error))
         AlertDialog.Builder(this)
             .setTitle(title)
             .setMessage(error.message ?: getString(R.string.unknown_error))
@@ -2056,7 +2174,7 @@ class MainActivity : Activity() {
                             "encoding=${imported.encoding} sha256=${imported.sha256} " +
                             "importMs=$importMillis",
                     )
-                    startActivity(Intent(this, MainActivity::class.java))
+                    startActivity(Intent(this, MainActivity::class.java).putExtra(EXTRA_OPEN_READER, true))
                     finish()
                 }.onFailure(::showImportFailure)
             }
@@ -3344,6 +3462,7 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(STATE_READER_CHROME_VISIBLE, readerChromeVisible)
+        outState.putBoolean(STATE_BOOKSHELF_VISIBLE, bookshelfHome.visibility == View.VISIBLE)
         if (::reader.isInitialized && ::readerLayoutManager.isInitialized) {
             val position = readerLayoutManager.findFirstVisibleItemPosition()
             if (position != RecyclerView.NO_POSITION) {
@@ -3377,12 +3496,48 @@ class MainActivity : Activity() {
         super.onSaveInstanceState(outState)
     }
 
+    private fun updateReaderBackHandling() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (bookshelfHome.visibility == View.VISIBLE) {
+            readerBackCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+            readerBackCallback = null
+        } else if (readerBackCallback == null) {
+            val callback = OnBackInvokedCallback {
+                returnToBookshelfOrCancelSelection()
+            }
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                callback,
+            )
+            readerBackCallback = callback
+        }
+    }
+
+    private fun returnToBookshelfOrCancelSelection() {
+        if (selectionControls.visibility == View.VISIBLE) selectionGestureController?.cancelSelection()
+        else showBookshelf()
+    }
+
     override fun onStop() {
         if (!restoreInProgress) persistReadingPosition()
         super.onStop()
     }
 
+    @SuppressLint("GestureBackNavigation") // API 33+ uses OnBackInvokedCallback above.
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onBackPressed() {
+        if (bookshelfHome.visibility == View.VISIBLE) {
+            super.onBackPressed()
+        } else {
+            returnToBookshelfOrCancelSelection()
+        }
+    }
+
     override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            readerBackCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+            readerBackCallback = null
+        }
         cancelDictionaryLookup()
         cancelActiveSearch()
         activeImportCancellation?.cancel()
@@ -3448,6 +3603,7 @@ class MainActivity : Activity() {
         const val REQUEST_OPEN_BACKUP = 1003
         const val STATE_FIRST_VISIBLE_POSITION = "reader.firstVisiblePosition"
         const val STATE_READER_CHROME_VISIBLE = "reader.chromeVisible"
+        const val STATE_BOOKSHELF_VISIBLE = "bookshelf.visible"
         const val STATE_FIRST_VISIBLE_OFFSET = "reader.firstVisibleOffset"
         const val STATE_READER_WIDTH = "reader.width"
         const val STATE_READER_ANCHOR_UTF16 = "reader.anchorUtf16"
@@ -3461,6 +3617,7 @@ class MainActivity : Activity() {
         const val STATE_PINYIN_OVERRIDE_OFFSETS = "pinyin.overrideOffsets"
         const val STATE_PINYIN_OVERRIDE_VALUES = "pinyin.overrideValues"
         const val EXTRA_RENDERER = "renderer"
+        const val EXTRA_OPEN_READER = "open_reader"
         const val EXTRA_PROBE = "probe_renderer"
         const val PROBE_TAG = "WorldViewerProbe"
         const val EXTRA_PINYIN_PROBE = "probe_pinyin"
