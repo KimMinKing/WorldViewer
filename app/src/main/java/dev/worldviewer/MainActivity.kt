@@ -48,6 +48,7 @@ import dev.worldviewer.lookup.DictionaryLookupCoordinator
 import dev.worldviewer.lookup.DictionaryLookupRequest
 import dev.worldviewer.lookup.DictionaryLookupResponse
 import dev.worldviewer.lookup.LookupResultType
+import dev.worldviewer.lookup.MyMemoryTranslationProvider
 import dev.worldviewer.lookup.OfflineKoreanDictionaryProvider
 import dev.worldviewer.lookup.CcCedictLookupProvider
 import dev.worldviewer.reader.AutoBookCover
@@ -2616,12 +2617,15 @@ class MainActivity : Activity() {
 
     private fun showDictionaryResult(target: MeaningTarget, response: DictionaryLookupResponse) {
         if (response.entries.isEmpty()) {
-            AlertDialog.Builder(this)
+            val builder = AlertDialog.Builder(this)
                 .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
                 .setMessage(R.string.dictionary_no_result)
                 .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
                 .setNegativeButton(android.R.string.cancel, null)
-                .show()
+            if (response.resultType != LookupResultType.TRANSLATION) {
+                builder.setNeutralButton(R.string.online_translation) { _, _ -> startOnlineTranslation(target) }
+            }
+            builder.show()
             return
         }
         val padding = 24.dp
@@ -2652,12 +2656,14 @@ class MainActivity : Activity() {
                 }
             })
         }
-        content.addView(TextView(this).apply {
-            setPadding(0, 16.dp, 0, 8.dp)
-            text = getString(R.string.dictionary_cc_cedict_attribution)
-            contentDescription = getString(R.string.dictionary_cc_cedict_attribution_description)
-            setOnClickListener { openWebPage(CC_CEDICT_URL) }
-        })
+        if (response.attributions.any { it.displayName == "CC-CEDICT" }) {
+            content.addView(TextView(this).apply {
+                setPadding(0, 16.dp, 0, 8.dp)
+                text = getString(R.string.dictionary_cc_cedict_attribution)
+                contentDescription = getString(R.string.dictionary_cc_cedict_attribution_description)
+                setOnClickListener { openWebPage(CC_CEDICT_URL) }
+            })
+        }
         if (response.resultType == LookupResultType.TRANSLATED_DICTIONARY) {
             content.addView(ImageView(this).apply {
                 setImageResource(R.drawable.powered_by_google_translate)
@@ -2673,13 +2679,88 @@ class MainActivity : Activity() {
                 text = getString(R.string.dictionary_machine_translation_notice)
             })
         }
+        if (response.resultType == LookupResultType.TRANSLATION) {
+            content.addView(TextView(this).apply {
+                setPadding(0, 16.dp, 0, 8.dp)
+                text = getString(R.string.online_translation_attribution)
+                contentDescription = getString(R.string.online_translation_attribution_description)
+                setOnClickListener { openWebPage(MYMEMORY_URL) }
+            })
+            content.addView(TextView(this).apply {
+                textSize = 12f
+                text = getString(R.string.online_translation_notice)
+            })
+        }
         val scroll = ScrollView(this).apply { addView(content) }
-        AlertDialog.Builder(this)
+        val builder = AlertDialog.Builder(this)
             .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
             .setView(scroll)
             .setPositiveButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
             .setNegativeButton(android.R.string.cancel, null)
+        if (response.resultType != LookupResultType.TRANSLATION) {
+            builder.setNeutralButton(R.string.online_translation) { _, _ -> startOnlineTranslation(target) }
+        }
+        builder.show()
+    }
+
+    private fun startOnlineTranslation(target: MeaningTarget) {
+        val preferences = getSharedPreferences(DICTIONARY_PREFERENCES, MODE_PRIVATE)
+        if (preferences.getBoolean(MYMEMORY_CONSENT, false)) {
+            requestOnlineTranslation(target)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.online_translation_consent_title)
+            .setMessage(R.string.online_translation_consent_message)
+            .setPositiveButton(R.string.online_translation_continue) { _, _ ->
+                preferences.edit().putBoolean(MYMEMORY_CONSENT, true).apply()
+                requestOnlineTranslation(target)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    private fun requestOnlineTranslation(target: MeaningTarget) {
+        cancelDictionaryLookup()
+        val coordinator = DictionaryLookupCoordinator(
+            worker = dictionaryExecutor,
+            deliver = { action -> runOnUiThread(action) },
+        ) { request, result ->
+            dictionaryProgressDialog?.dismiss()
+            dictionaryProgressDialog = null
+            if (isDestroyed || !selectionRequestGate.isCurrent(request.selectionVersion)) {
+                Log.i(MEANING_TAG, "stale online translation discarded")
+                return@DictionaryLookupCoordinator
+            }
+            result.onSuccess { response -> showDictionaryResult(target, response) }
+                .onFailure { error ->
+                    Log.e(MEANING_TAG, "online translation failed", error)
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.online_translation_failed)
+                        .setMessage(getString(R.string.online_translation_failed_message, error.message ?: getString(R.string.unknown_error)))
+                        .setPositiveButton(R.string.online_translation) { _, _ -> requestOnlineTranslation(target) }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                }
+        }
+        dictionaryLookupCoordinator = coordinator
+        dictionaryProgressDialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dictionary_lookup_title, target.sourceText))
+            .setMessage(R.string.online_translation_progress)
+            .setNegativeButton(R.string.dictionary_lookup_cancel) { _, _ -> cancelDictionaryLookup() }
+            .setOnCancelListener { cancelDictionaryLookup() }
+            .show()
+        coordinator.request(
+            DictionaryLookupRequest(
+                sourceText = target.sourceText,
+                documentId = target.documentSha256,
+                documentVersion = target.documentSha256,
+                rangeStartUtf16 = target.startUtf16,
+                rangeEndUtf16 = target.endUtf16,
+                selectionVersion = target.selectionVersion,
+            ),
+            MyMemoryTranslationProvider(),
+        )
     }
 
     private fun showDictionaryFailure(target: MeaningTarget, error: Throwable) {
@@ -3343,8 +3424,10 @@ class MainActivity : Activity() {
         const val DICTIONARY_DOWNLOAD_POLICY = "model_download_policy"
         const val DICTIONARY_POLICY_WIFI = "wifi"
         const val DICTIONARY_POLICY_ANY_NETWORK = "any_network"
+        const val MYMEMORY_CONSENT = "mymemory_consent"
         const val CC_CEDICT_URL = "https://www.mdbg.net/chinese/dictionary?page=cc-cedict"
         const val GOOGLE_TRANSLATE_URL = "https://translate.google.com/"
+        const val MYMEMORY_URL = "https://mymemory.translated.net/"
         val SELECTION_DELAYS = setOf(250, 350, 450)
         val STORED_NAME = Regex("[0-9a-f]{64}\\.original")
     }
