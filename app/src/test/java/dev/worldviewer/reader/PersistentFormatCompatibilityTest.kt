@@ -12,11 +12,11 @@ class PersistentFormatCompatibilityTest {
     private val document = "a".repeat(64)
 
     @Test
-    fun `version one headers remain stable for every user data format`() {
+    fun `current headers remain stable for every user data format`() {
         persistentFiles().forEach { format ->
             DataInputStream(format.file.inputStream()).use { input ->
                 assertEquals(format.label, format.magic, input.readInt())
-                assertEquals(format.label, 1, input.readInt())
+                assertEquals(format.label, format.version, input.readInt())
             }
         }
     }
@@ -41,7 +41,7 @@ class PersistentFormatCompatibilityTest {
                 bytes[4] = 0
                 bytes[5] = 0
                 bytes[6] = 0
-                bytes[7] = 2
+                bytes[7] = (format.version + 1).toByte()
             }
             format.file.writeBytes(future)
 
@@ -159,6 +159,7 @@ class PersistentFormatCompatibilityTest {
                 "독서 스타일 정보",
                 0x57565354,
                 styleDirectory.resolve(ReaderStyleStore.FILE_NAME),
+                version = 2,
             ) { ReaderStyleStore(styleDirectory).load() },
             PersistentFile(
                 "수동 목차 정보",
@@ -182,6 +183,7 @@ class PersistentFormatCompatibilityTest {
         val label: String,
         val magic: Int,
         val file: java.io.File,
+        val version: Int = 1,
         val load: () -> Any?,
     )
 }

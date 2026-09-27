@@ -43,7 +43,19 @@
     <string name="reader_style_light">밝게</string>
     <string name="reader_style_dark">어둡게</string>
     <string name="reader_style_save">저장</string>
-    <string name="reader_style_use_default">책별 설정 지우기</string>
+    <string name="reader_style_use_default">기본값 복원</string>
+    <string name="reader_style_text_color">글자색</string>
+    <string name="reader_style_background_color">배경색</string>
+    <string name="reader_style_preview_sample">江湖夜雨十年灯。\n강호의 밤비 · jiāng hú</string>
+    <string name="reader_style_contrast_warning">글자와 배경의 대비가 부족합니다. 다른 색을 골라 주세요.</string>
+    <string-array name="reader_style_color_names">
+        <item>테마 기본</item><item>먹색</item><item>갈색</item><item>짙은 녹색</item>
+        <item>밝은 회색</item><item>흰색</item><item>연한 하늘색</item>
+    </string-array>
+    <string-array name="reader_style_background_names">
+        <item>테마 기본</item><item>종이색</item><item>흰색</item><item>연한 녹색</item>
+        <item>짙은 회색</item><item>남색</item><item>짙은 갈색</item>
+    </string-array>
     <string name="reader_style_saved">독서 스타일을 저장했습니다.</string>
     <string name="reader_style_failed">독서 스타일 저장 실패</string>
     <string name="table_of_contents">목차</string>

@@ -335,19 +335,25 @@ private fun TextView.applyReaderStyle(style: ReaderStyle, density: Float) {
     setLineSpacing(10 * density, style.lineSpacingPercent / 100f)
 }
 
-internal fun ReaderStyle.textColor(): Int = when (theme) {
-    ReaderTheme.LIGHT -> Color.rgb(35, 34, 31)
-    ReaderTheme.DARK -> Color.rgb(232, 230, 224)
-}
+internal fun ReaderStyle.textColor(): Int = resolvedTextColor()
 
-internal fun ReaderStyle.selectionColor(): Int = when (theme) {
+internal fun ReaderStyle.selectionColor(): Int = readableHighlight(when (theme) {
     ReaderTheme.LIGHT -> Color.rgb(255, 224, 130)
     ReaderTheme.DARK -> Color.rgb(112, 85, 35)
-}
+})
 
-internal fun ReaderStyle.highlightColor(): Int = when (theme) {
+internal fun ReaderStyle.highlightColor(): Int = readableHighlight(when (theme) {
     ReaderTheme.LIGHT -> Color.rgb(255, 235, 120)
     ReaderTheme.DARK -> Color.rgb(112, 91, 28)
+})
+
+private fun ReaderStyle.readableHighlight(preferred: Int): Int {
+    if (ReaderStyleColors.contrast(resolvedTextColor(), preferred) >= 4.5) return preferred
+    val background = resolvedBackgroundColor()
+    val foreground = resolvedTextColor()
+    fun channel(shift: Int): Int =
+        (((background ushr shift) and 0xFF) * 0.88 + ((foreground ushr shift) and 0xFF) * 0.12).toInt()
+    return Color.rgb(channel(16), channel(8), channel(0))
 }
 
 enum class PinyinDisplayMode {

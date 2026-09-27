@@ -1,6 +1,8 @@
 package dev.worldviewer.reader
 
 import java.io.IOException
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -26,7 +28,8 @@ class ReaderStyleStoreTest {
         val directory = Files.createTempDirectory("worldviewer-style-roundtrip").toFile()
         val store = ReaderStyleStore(directory)
         val defaultStyle = ReaderStyle(18, 125, ReaderTheme.DARK)
-        val bookStyle = ReaderStyle(24, 150, ReaderTheme.LIGHT)
+        val bookStyle = ReaderStyle(24, 150, ReaderTheme.LIGHT,
+            textColorArgb = 0xFFFFFFFF.toInt(), backgroundColorArgb = 0xFF102838.toInt())
         val preferences = ReaderStylePreferences(defaultStyle, mapOf(bookA to bookStyle))
 
         store.save(preferences)
@@ -35,6 +38,51 @@ class ReaderStyleStoreTest {
         assertEquals(bookStyle, preferences.resolved(bookA))
         assertEquals(defaultStyle, preferences.resolved(bookB))
         assertFalse(directory.listFiles().orEmpty().any { it.name.endsWith(".partial") })
+    }
+
+    @Test
+    fun `version one styles load unchanged and upgrade only when saved`() {
+        val directory = Files.createTempDirectory("worldviewer-style-v1").toFile()
+        val file = directory.resolve(ReaderStyleStore.FILE_NAME)
+        DataOutputStream(file.outputStream()).use { output ->
+            output.writeInt(0x57565354)
+            output.writeInt(1)
+            output.writeInt(21)
+            output.writeInt(130)
+            output.writeUTF("DARK")
+            output.writeInt(1)
+            output.writeUTF(bookA)
+            output.writeInt(24)
+            output.writeInt(150)
+            output.writeUTF("LIGHT")
+        }
+        val before = file.readBytes()
+        val store = ReaderStyleStore(directory)
+        val legacy = store.load()
+        assertEquals(ReaderStyle(21, 130, ReaderTheme.DARK), legacy?.defaultStyle)
+        assertEquals(ReaderStyle(24, 150, ReaderTheme.LIGHT), legacy?.bookStyles?.get(bookA))
+        assertTrue(before.contentEquals(file.readBytes()))
+
+        store.save(requireNotNull(legacy))
+        DataInputStream(file.inputStream()).use { input ->
+            assertEquals(0x57565354, input.readInt())
+            assertEquals(2, input.readInt())
+        }
+        assertEquals(legacy, store.load())
+    }
+
+    @Test
+    fun `palette keeps readable text and rejects low contrast combinations`() {
+        val readable = ReaderStyle(
+            textColorArgb = 0xFFFFFFFF.toInt(),
+            backgroundColorArgb = 0xFF102838.toInt(),
+        )
+        val unreadable = readable.copy(backgroundColorArgb = 0xFFFAF8F3.toInt())
+        assertTrue(readable.hasReadableContrast())
+        assertFalse(unreadable.hasReadableContrast())
+        assertTrue(ReaderStyleColors.contrast(readable.resolvedTextColor(), readable.resolvedBackgroundColor()) >= 7.0)
+        assertTrue(ReaderStyle.DEFAULT.hasReadableContrast())
+        assertTrue(ReaderStyle(theme = ReaderTheme.DARK).hasReadableContrast())
     }
 
     @Test
@@ -79,6 +127,14 @@ class ReaderStyleStoreTest {
         }
         assertThrows(TxtImportException::class.java) {
             store.save(ReaderStylePreferences(bookStyles = mapOf("outside" to ReaderStyle.DEFAULT)))
+        }
+        assertThrows(TxtImportException::class.java) {
+            store.save(ReaderStylePreferences(defaultStyle = ReaderStyle(
+                textColorArgb = 0xFFFFFFFF.toInt(), backgroundColorArgb = 0xFFFAF8F3.toInt(),
+            )))
+        }
+        assertThrows(TxtImportException::class.java) {
+            store.save(ReaderStylePreferences(defaultStyle = ReaderStyle(textColorArgb = 0x8023221F.toInt())))
         }
 
         assertEquals(original, store.load())

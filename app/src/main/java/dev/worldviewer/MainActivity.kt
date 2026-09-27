@@ -30,6 +30,7 @@ import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
 import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -38,6 +39,7 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -86,9 +88,13 @@ import dev.worldviewer.reader.ReadingPositionResolver
 import dev.worldviewer.reader.ReadingPositionStore
 import dev.worldviewer.reader.ReadingProgress
 import dev.worldviewer.reader.ReaderStyle
+import dev.worldviewer.reader.ReaderStyleColors
 import dev.worldviewer.reader.ReaderStylePreferences
 import dev.worldviewer.reader.ReaderStyleStore
 import dev.worldviewer.reader.ReaderTheme
+import dev.worldviewer.reader.hasReadableContrast
+import dev.worldviewer.reader.resolvedBackgroundColor
+import dev.worldviewer.reader.resolvedTextColor
 import dev.worldviewer.reader.StagedTextImport
 import dev.worldviewer.reader.StreamingTextIndex
 import dev.worldviewer.reader.StreamingTextSearch
@@ -1193,6 +1199,8 @@ class MainActivity : Activity() {
         setReaderChromeVisible(false)
         reader.visibility = View.INVISIBLE
         bookshelfHome.visibility = View.VISIBLE
+        rootLayout.setBackgroundColor(Color.rgb(250, 248, 243))
+        applySystemBarAppearance(false)
         updateReaderBackHandling()
         bookshelfStatusView.text = getString(R.string.bookshelf_loading)
         bookshelfStatusView.visibility = View.VISIBLE
@@ -1258,6 +1266,8 @@ class MainActivity : Activity() {
         }
         bookshelfHome.visibility = View.GONE
         reader.visibility = View.VISIBLE
+        rootLayout.setBackgroundColor(currentReaderStyle.resolvedBackgroundColor())
+        applySystemBarAppearance(hasDarkReaderBackground(currentReaderStyle))
         updateReaderBackHandling()
         reader.requestFocus()
         if (pinyinMode != PinyinDisplayMode.ORIGINAL) reader.post { requestVisiblePinyin() }
@@ -1905,21 +1915,65 @@ class MainActivity : Activity() {
         content.addView(themeLabel)
         content.addView(themeGroup)
 
+        val textColors = listOf<Int?>(null) + ReaderStyleColors.TEXT
+        val backgroundColors = listOf<Int?>(null) + ReaderStyleColors.BACKGROUND
+        val textColorSpinner = Spinner(this)
+        val backgroundColorSpinner = Spinner(this)
+        val colorNames = resources.getStringArray(R.array.reader_style_color_names).toList()
+        val backgroundNames = resources.getStringArray(R.array.reader_style_background_names).toList()
+        textColorSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, colorNames)
+        backgroundColorSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, backgroundNames)
+        content.addView(TextView(this).apply { text = getString(R.string.reader_style_text_color) })
+        content.addView(textColorSpinner)
+        content.addView(TextView(this).apply { text = getString(R.string.reader_style_background_color) })
+        content.addView(backgroundColorSpinner)
+        val preview = TextView(this).apply {
+            text = getString(R.string.reader_style_preview_sample)
+            setPadding(12.dp, 12.dp, 12.dp, 12.dp)
+        }
+        content.addView(preview)
+        val contrastMessage = TextView(this).apply { text = getString(R.string.reader_style_contrast_warning) }
+        content.addView(contrastMessage)
+        var saveButton: Button? = null
+        var clearButton: Button? = null
+
+        fun selectedStyle(): ReaderStyle = ReaderStyle(
+            fontSizeSp = STYLE_FONT_MIN + fontSize.progress,
+            lineSpacingPercent = STYLE_LINE_MIN + lineSpacing.progress,
+            theme = if (themeGroup.checkedRadioButtonId == darkTheme.id) ReaderTheme.DARK else ReaderTheme.LIGHT,
+            textColorArgb = textColors[textColorSpinner.selectedItemPosition.coerceAtLeast(0)],
+            backgroundColorArgb = backgroundColors[backgroundColorSpinner.selectedItemPosition.coerceAtLeast(0)],
+        )
+        fun updatePreview() {
+            val style = selectedStyle()
+            preview.textSize = style.fontSizeSp.toFloat()
+            preview.setLineSpacing(0f, style.lineSpacingPercent / 100f)
+            preview.setTextColor(style.resolvedTextColor())
+            preview.setBackgroundColor(style.resolvedBackgroundColor())
+            contrastMessage.visibility = if (style.hasReadableContrast()) View.GONE else View.VISIBLE
+            saveButton?.isEnabled = style.hasReadableContrast()
+        }
+
         fun updateLabels() {
             fontLabel.text = getString(R.string.reader_style_font_size, STYLE_FONT_MIN + fontSize.progress)
             spacingLabel.text = getString(R.string.reader_style_line_spacing, STYLE_LINE_MIN + lineSpacing.progress)
+            updatePreview()
         }
         fun putStyle(style: ReaderStyle) {
             fontSize.progress = style.fontSizeSp.coerceIn(STYLE_FONT_MIN, STYLE_FONT_MAX) - STYLE_FONT_MIN
             lineSpacing.progress = style.lineSpacingPercent.coerceIn(STYLE_LINE_MIN, STYLE_LINE_MAX) - STYLE_LINE_MIN
             themeGroup.check(if (style.theme == ReaderTheme.DARK) darkTheme.id else lightTheme.id)
+            textColorSpinner.setSelection(textColors.indexOf(style.textColorArgb).coerceAtLeast(0))
+            backgroundColorSpinner.setSelection(backgroundColors.indexOf(style.backgroundColorArgb).coerceAtLeast(0))
             updateLabels()
         }
-        fun selectedStyle(): ReaderStyle = ReaderStyle(
-            fontSizeSp = STYLE_FONT_MIN + fontSize.progress,
-            lineSpacingPercent = STYLE_LINE_MIN + lineSpacing.progress,
-            theme = if (themeGroup.checkedRadioButtonId == darkTheme.id) ReaderTheme.DARK else ReaderTheme.LIGHT,
-        )
+        val colorListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = updatePreview()
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        textColorSpinner.onItemSelectedListener = colorListener
+        backgroundColorSpinner.onItemSelectedListener = colorListener
+        themeGroup.setOnCheckedChangeListener { _, _ -> updatePreview() }
         val sliderListener = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) = updateLabels()
             override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
@@ -1934,22 +1988,26 @@ class MainActivity : Activity() {
                 bookId?.let(preferences.bookStyles::get) ?: preferences.defaultStyle
             }
             putStyle(style)
+            clearButton?.isEnabled = checkedId == defaultScope.id ||
+                (bookId != null && preferences.bookStyles.containsKey(bookId))
         }
         if (bookId != null) scopeGroup.check(bookScope.id) else scopeGroup.check(defaultScope.id)
 
         lateinit var dialog: AlertDialog
         dialog = AlertDialog.Builder(this)
             .setTitle(R.string.reader_style)
-            .setView(content)
+            .setView(ScrollView(this).apply { addView(content) })
             .setPositiveButton(R.string.reader_style_save, null)
             .setNeutralButton(R.string.reader_style_use_default, null)
             .setNegativeButton(android.R.string.cancel, null)
             .create()
         dialog.setOnShowListener {
-            val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-            val clearButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
-            clearButton.isEnabled = bookId != null && preferences.bookStyles.containsKey(bookId)
-            saveButton.setOnClickListener {
+            saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            clearButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+            clearButton?.isEnabled = scopeGroup.checkedRadioButtonId == defaultScope.id ||
+                (bookId != null && preferences.bookStyles.containsKey(bookId))
+            updatePreview()
+            saveButton?.setOnClickListener {
                 val style = selectedStyle()
                 val saveForBook = scopeGroup.checkedRadioButtonId == bookScope.id && bookId != null
                 saveReaderStyle(dialog) { latest ->
@@ -1960,10 +2018,11 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            clearButton.setOnClickListener {
-                val currentBook = bookId ?: return@setOnClickListener
+            clearButton?.setOnClickListener {
+                val defaultSelected = scopeGroup.checkedRadioButtonId == defaultScope.id
                 saveReaderStyle(dialog) { latest ->
-                    latest.copy(bookStyles = latest.bookStyles - currentBook)
+                    if (defaultSelected) latest.copy(defaultStyle = ReaderStyle.DEFAULT)
+                    else latest.copy(bookStyles = latest.bookStyles - requireNotNull(bookId))
                 }
             }
         }
@@ -2013,18 +2072,27 @@ class MainActivity : Activity() {
     }
 
     private fun applyReaderTheme(style: ReaderStyle) {
-        val dark = style.theme == ReaderTheme.DARK
-        val background = if (dark) Color.rgb(24, 25, 24) else Color.rgb(250, 248, 243)
+        val dark = hasDarkReaderBackground(style)
+        val background = style.resolvedBackgroundColor()
         val text = if (dark) Color.rgb(232, 230, 224) else Color.rgb(35, 34, 31)
         val accent = if (dark) Color.rgb(153, 205, 188) else Color.rgb(47, 93, 80)
         val button = if (dark) Color.rgb(52, 56, 53) else Color.rgb(230, 226, 217)
-        rootLayout.setBackgroundColor(background)
+        rootLayout.setBackgroundColor(if (bookshelfHome.visibility == View.VISIBLE) Color.rgb(250, 248, 243) else background)
         reader.setBackgroundColor(background)
         readerChrome.setBackgroundColor(background)
         selectionControls.setBackgroundColor(background)
         statusView.setTextColor(accent)
         readingProgressView.setTextColor(accent)
-        applyControlTheme(rootLayout, text, button)
+        applyControlTheme(readerChrome, text, button)
+        applyControlTheme(selectionControls, text, button)
+        applySystemBarAppearance(dark && bookshelfHome.visibility != View.VISIBLE)
+    }
+
+    private fun hasDarkReaderBackground(style: ReaderStyle): Boolean =
+        ReaderStyleColors.contrast(style.resolvedBackgroundColor(), Color.WHITE) >
+            ReaderStyleColors.contrast(style.resolvedBackgroundColor(), Color.BLACK)
+
+    private fun applySystemBarAppearance(dark: Boolean) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
                 android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
