@@ -77,6 +77,24 @@ class BookCatalogStoreTest {
     }
 
     @Test
+    fun `batch addition preserves current book and ignores identical content`() {
+        val directory = Files.createTempDirectory("worldviewer-catalog-batch").toFile()
+        val store = BookCatalogStore(directory)
+        val first = ImportMetadata("$hashA.original", "기존.txt", hashA, 10, "UTF-8")
+        store.reconcileCurrent(first, 100)
+        val newOriginal = directory.resolve("$hashB.original").apply { writeText("second") }
+        val imported = ImportedText(newOriginal, hashB, 6, "UTF-8")
+
+        val added = store.addImported(imported, "하위/새책.txt", 200)
+        assertEquals(hashA, added.currentBookId)
+        assertEquals(listOf(hashB, hashA), added.books.map(BookCatalogEntry::bookId))
+        assertEquals("하위/새책.txt", added.books[0].displayName)
+        val before = directory.resolve(BookCatalogStore.FILE_NAME).readBytes()
+        assertEquals(added, store.addImported(imported, "중복.txt", 300))
+        assertTrue(before.contentEquals(directory.resolve(BookCatalogStore.FILE_NAME).readBytes()))
+    }
+
+    @Test
     fun `failed replacement keeps the prior catalog and removes the partial`() {
         val directory = Files.createTempDirectory("worldviewer-catalog-failure").toFile()
         val store = BookCatalogStore(directory)

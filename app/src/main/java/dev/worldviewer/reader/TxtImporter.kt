@@ -62,6 +62,8 @@ class ImportCancellation {
         cancelled.set(true)
     }
 
+    fun isCancelled(): Boolean = cancelled.get()
+
     internal fun throwIfCancelled() {
         if (cancelled.get() || Thread.currentThread().isInterrupted) {
             throw TxtImportCancelledException()

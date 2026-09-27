@@ -65,6 +65,9 @@ import dev.worldviewer.reader.BlockRenderer
 import dev.worldviewer.reader.BookCatalog
 import dev.worldviewer.reader.BookCatalogEntry
 import dev.worldviewer.reader.BookCatalogStore
+import dev.worldviewer.reader.FolderTxtCandidate
+import dev.worldviewer.reader.FolderTxtScan
+import dev.worldviewer.reader.FolderTxtScanner
 import dev.worldviewer.reader.ImportMetadata
 import dev.worldviewer.reader.ImportMetadataStore
 import dev.worldviewer.reader.ImportCancellation
@@ -155,6 +158,8 @@ class MainActivity : Activity() {
     private var pendingPinyinReadings: Map<Int, List<dev.worldviewer.pinyin.PinyinReading>>? = null
     private var pendingImport: StagedTextImport? = null
     private var activeImportCancellation: ImportCancellation? = null
+    private var folderCancellation: ImportCancellation? = null
+    private var folderOperationDialog: AlertDialog? = null
     private var currentDocumentSha256: String? = null
     private var currentReaderStyle = ReaderStyle.DEFAULT
     private var documentUtf16Length = 0
@@ -588,6 +593,10 @@ class MainActivity : Activity() {
             bookshelfSnapshot?.let(::showBookshelfDialog)
         }
         bookshelfHome.addView(bookshelfActions)
+        bookshelfHome.addView(Button(this).apply {
+            text = getString(R.string.bookshelf_add_folder)
+            setOnClickListener { openFolderPicker() }
+        })
         bookshelfStatusView = TextView(this).apply {
             text = getString(R.string.bookshelf_loading)
             setPadding(0, 12.dp, 0, 12.dp)
@@ -887,6 +896,14 @@ class MainActivity : Activity() {
         }
         @Suppress("DEPRECATION")
         startActivityForResult(picker, REQUEST_OPEN_TXT)
+    }
+
+    private fun openFolderPicker() {
+        if (folderCancellation != null) return
+        @Suppress("DEPRECATION")
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }, REQUEST_OPEN_FOLDER)
     }
 
     private fun showBackupRestoreMenu() {
@@ -2046,6 +2063,10 @@ class MainActivity : Activity() {
     @Deprecated("Uses the platform file picker without adding an Activity Result dependency.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_OPEN_FOLDER) {
+            if (resultCode == RESULT_OK) data?.data?.let(::scanFolder)
+            return
+        }
         if (requestCode == REQUEST_CREATE_BACKUP) {
             val includeOriginals = pendingBackupIncludesOriginals
             pendingBackupIncludesOriginals = null
@@ -2095,6 +2116,172 @@ class MainActivity : Activity() {
                 }.onFailure(::showImportFailure)
             }
         }
+    }
+
+    private fun scanFolder(treeUri: Uri) {
+        val cancellation = ImportCancellation()
+        folderCancellation = cancellation
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.bookshelf_folder_scan_title)
+            .setMessage(R.string.bookshelf_folder_scanning)
+            .setNegativeButton(android.R.string.cancel) { _, _ -> cancellation.cancel() }
+            .setOnCancelListener { cancellation.cancel() }
+            .create()
+        folderOperationDialog = dialog
+        dialog.show()
+        blockExecutor.execute {
+            val result = runCatching {
+                val existing = bookCatalogStore().load()?.books?.map(BookCatalogEntry::bookId).orEmpty().toSet()
+                FolderTxtScanner(contentResolver).scan(treeUri, existing, cancellation) { count ->
+                    runOnUiThread {
+                        if (!isDestroyed && folderCancellation === cancellation) {
+                            dialog.setMessage(getString(R.string.bookshelf_folder_scanned, count))
+                        }
+                    }
+                }
+            }
+            runOnUiThread {
+                if (isDestroyed || folderCancellation !== cancellation) return@runOnUiThread
+                dialog.dismiss()
+                folderOperationDialog = null
+                folderCancellation = null
+                result.onSuccess(::showFolderPreview).onFailure { error ->
+                    if (error !is TxtImportCancelledException) showLibraryFailure(
+                        getString(R.string.bookshelf_folder_scan_title), error,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun showFolderPreview(scan: FolderTxtScan) {
+        val examples = scan.newFiles.take(8).joinToString("\n") { "• ${it.displayName}" }
+        val failureExamples = scan.failures.take(4).joinToString("\n") { "• $it" }
+        val message = getString(
+            R.string.bookshelf_folder_preview,
+            scan.newFiles.size,
+            scan.duplicateCount,
+            scan.failures.size,
+            scan.newFiles.count { it.encodings.none { candidate -> candidate.automatic } },
+        ) + listOf(examples, failureExamples).filter(String::isNotEmpty).joinToString("\n\n", prefix = "\n\n")
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.bookshelf_folder_scan_title)
+            .setMessage(message)
+            .setPositiveButton(R.string.bookshelf_folder_import) { _, _ -> startFolderBatch(scan) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = scan.newFiles.isNotEmpty()
+        }
+        dialog.show()
+    }
+
+    private data class FolderBatch(
+        val files: List<FolderTxtCandidate>,
+        val cancellation: ImportCancellation,
+        val duplicateCount: Int,
+        val failures: MutableList<String>,
+        var index: Int = 0,
+        var added: Int = 0,
+    )
+
+    private fun startFolderBatch(scan: FolderTxtScan) {
+        val cancellation = ImportCancellation()
+        folderCancellation = cancellation
+        val batch = FolderBatch(scan.newFiles, cancellation, scan.duplicateCount, scan.failures.toMutableList())
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.bookshelf_folder_import)
+            .setMessage(getString(R.string.bookshelf_folder_progress, 0, batch.files.size, ""))
+            .setNegativeButton(android.R.string.cancel) { _, _ -> cancellation.cancel() }
+            .setOnCancelListener { cancellation.cancel() }
+            .create()
+        folderOperationDialog = dialog
+        dialog.show()
+        continueFolderBatch(batch)
+    }
+
+    private fun continueFolderBatch(batch: FolderBatch) {
+        if (isDestroyed || batch.cancellation !== folderCancellation) return
+        if (batch.index >= batch.files.size || batch.cancellation.isCancelled()) {
+            finishFolderBatch(batch)
+            return
+        }
+        val file = batch.files[batch.index]
+        val automatic = file.encodings.singleOrNull()?.takeIf { it.automatic }
+        if (automatic != null) {
+            importFolderFile(batch, file, automatic.encoding)
+            return
+        }
+        var selected = -1
+        lateinit var dialog: AlertDialog
+        dialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.encoding_preview_title, file.displayName))
+            .setSingleChoiceItems(file.encodings.map { "${it.encoding} · ${it.preview}" }.toTypedArray(), -1) { _, which ->
+                selected = which
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+            }
+            .setPositiveButton(R.string.encoding_open) { _, _ ->
+                importFolderFile(batch, file, file.encodings[selected].encoding)
+            }
+            .setNeutralButton(R.string.bookshelf_folder_skip) { _, _ ->
+                batch.failures += "${file.displayName}: 인코딩을 선택하지 않아 건너뜀"
+                batch.index++
+                continueFolderBatch(batch)
+            }
+            .setNegativeButton(android.R.string.cancel) { _, _ ->
+                batch.cancellation.cancel()
+                finishFolderBatch(batch)
+            }
+            .setOnCancelListener {
+                batch.cancellation.cancel()
+                finishFolderBatch(batch)
+            }
+            .create()
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false }
+        dialog.show()
+    }
+
+    private fun importFolderFile(batch: FolderBatch, file: FolderTxtCandidate, encoding: String) {
+        folderOperationDialog?.setMessage(getString(
+            R.string.bookshelf_folder_progress, batch.index + 1, batch.files.size, file.displayName,
+        ))
+        blockExecutor.execute {
+            val result = runCatching {
+                val input = contentResolver.openInputStream(file.uri)
+                    ?: throw TxtImportException("파일을 다시 열 수 없습니다.")
+                TxtImporter.stage(
+                    input, importDirectory(), totalBytes = file.byteCount, cancellation = batch.cancellation,
+                ).use { staged ->
+                    if (staged.sha256 != file.sha256) throw TxtImportException("미리보기 뒤 원본 내용이 바뀌었습니다.")
+                    val imported = TxtImporter.commit(staged, encoding, batch.cancellation)
+                    bookCatalogStore().addImported(imported, file.displayName, System.currentTimeMillis())
+                }
+            }
+            runOnUiThread {
+                if (isDestroyed || folderCancellation !== batch.cancellation) return@runOnUiThread
+                result.onSuccess { batch.added++ }.onFailure { error ->
+                    if (error is TxtImportCancelledException) batch.cancellation.cancel()
+                    else batch.failures += "${file.displayName}: ${error.message ?: "가져오기 실패"}"
+                }
+                batch.index++
+                continueFolderBatch(batch)
+            }
+        }
+    }
+
+    private fun finishFolderBatch(batch: FolderBatch) {
+        folderOperationDialog?.dismiss()
+        folderOperationDialog = null
+        folderCancellation = null
+        showBookshelf()
+        val summary = (if (batch.cancellation.isCancelled()) {
+            getString(R.string.bookshelf_folder_cancelled) + "\n\n"
+        } else "") + getString(
+            R.string.bookshelf_folder_done,
+            batch.added, batch.duplicateCount, batch.failures.size,
+        ) + batch.failures.take(5).joinToString("\n", prefix = if (batch.failures.isEmpty()) "" else "\n\n")
+        AlertDialog.Builder(this).setTitle(R.string.bookshelf_folder_import)
+            .setMessage(summary).setPositiveButton(android.R.string.ok, null).show()
     }
 
     private fun showEncodingPreview(
@@ -3542,6 +3729,10 @@ class MainActivity : Activity() {
         cancelActiveSearch()
         activeImportCancellation?.cancel()
         activeImportCancellation = null
+        folderCancellation?.cancel()
+        folderCancellation = null
+        folderOperationDialog?.dismiss()
+        folderOperationDialog = null
         pendingImport?.close()
         pendingImport = null
         pendingRestoreFile?.delete()
@@ -3601,6 +3792,7 @@ class MainActivity : Activity() {
         const val REQUEST_OPEN_TXT = 1001
         const val REQUEST_CREATE_BACKUP = 1002
         const val REQUEST_OPEN_BACKUP = 1003
+        const val REQUEST_OPEN_FOLDER = 1004
         const val STATE_FIRST_VISIBLE_POSITION = "reader.firstVisiblePosition"
         const val STATE_READER_CHROME_VISIBLE = "reader.chromeVisible"
         const val STATE_BOOKSHELF_VISIBLE = "bookshelf.visible"

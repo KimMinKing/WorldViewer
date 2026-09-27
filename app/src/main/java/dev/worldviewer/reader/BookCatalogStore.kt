@@ -98,6 +98,26 @@ class BookCatalogStore(private val directory: File) {
         return updated
     }
 
+    fun addImported(imported: ImportedText, displayName: String, nowEpochMillis: Long): BookCatalog {
+        require(nowEpochMillis >= 0)
+        val existing = load() ?: BookCatalog(currentBookId = null, books = emptyList())
+        if (existing.books.any { it.bookId == imported.sha256 }) return existing
+        val entry = BookCatalogEntry(
+            bookId = imported.sha256,
+            documentSha256 = imported.sha256,
+            storedName = imported.storedFile.name,
+            displayName = displayName,
+            byteCount = imported.byteCount,
+            encoding = imported.encoding,
+            addedAtEpochMillis = nowEpochMillis,
+            lastOpenedAtEpochMillis = nowEpochMillis,
+        )
+        val updated = existing.copy(books = (existing.books + entry)
+            .sortedWith(compareByDescending<BookCatalogEntry> { it.lastOpenedAtEpochMillis }.thenBy { it.bookId }))
+        save(updated)
+        return updated
+    }
+
     fun removeNonCurrent(bookId: String): BookCatalog {
         if (!SHA256.matches(bookId)) throw TxtImportException("책 식별자가 올바르지 않습니다.")
         val existing = load() ?: throw TxtImportException("책 목록을 찾을 수 없습니다.")

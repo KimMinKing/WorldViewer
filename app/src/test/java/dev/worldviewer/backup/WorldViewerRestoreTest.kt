@@ -6,6 +6,7 @@ import dev.worldviewer.reader.BookCatalogEntry
 import dev.worldviewer.reader.BookCatalogStore
 import dev.worldviewer.reader.ImportMetadata
 import dev.worldviewer.reader.ImportMetadataStore
+import dev.worldviewer.reader.ImportedText
 import dev.worldviewer.reader.MeaningScope
 import dev.worldviewer.reader.ReadingPosition
 import dev.worldviewer.reader.ReadingPositionStore
@@ -230,21 +231,10 @@ class WorldViewerRestoreTest {
             byteCount = originalBytes.size.toLong(),
             encoding = "UTF-8",
         )
-        val catalog = BookCatalog(
-            currentBookId = documentHash,
-            books = listOf(
-                BookCatalogEntry(
-                    bookId = documentHash,
-                    documentSha256 = documentHash,
-                    storedName = storedName,
-                    displayName = metadata.displayName,
-                    byteCount = metadata.byteCount,
-                    encoding = metadata.encoding,
-                    addedAtEpochMillis = 10,
-                    lastOpenedAtEpochMillis = 20,
-                ),
-            ),
-        )
+        val secondBytes = "第二章\n续篇".toByteArray(Charsets.UTF_8)
+        val secondHash = sha256(secondBytes)
+        val secondStoredName = "$secondHash.original"
+        val secondOriginal = File(source, "imports/$secondStoredName").apply { writeBytes(secondBytes) }
         val position = ReadingPosition(
             documentSha256 = documentHash,
             blockIndex = 0,
@@ -253,7 +243,13 @@ class WorldViewerRestoreTest {
             quoteAfter = "江湖",
         )
         ImportMetadataStore(File(source, "imports")).save(metadata)
-        BookCatalogStore(File(source, "library")).save(catalog)
+        val catalogStore = BookCatalogStore(File(source, "library"))
+        catalogStore.reconcileCurrent(metadata, 20)
+        val catalog = catalogStore.addImported(
+            ImportedText(secondOriginal, secondHash, secondBytes.size.toLong(), "UTF-8"),
+            "하위/속편.txt",
+            30,
+        )
         ReadingPositionStore(File(source, "reading-positions")).save(position)
         val backupFile = temporary.newFile("round-trip.wvb")
         WorldViewerBackup(source).create(backupFile, includeOriginalTexts = true, createdAtEpochMillis = 7)
@@ -261,8 +257,9 @@ class WorldViewerRestoreTest {
 
         val result = WorldViewerRestore(target).restore(backupFile, RestoreConflictPolicy.REPLACE_EXISTING)
 
-        assertEquals(4, result.appliedPaths.size)
+        assertEquals(5, result.appliedPaths.size)
         assertArrayEquals(originalBytes, File(target, "imports/$storedName").readBytes())
+        assertArrayEquals(secondBytes, File(target, "imports/$secondStoredName").readBytes())
         assertEquals(metadata, ImportMetadataStore(File(target, "imports")).load())
         assertEquals(catalog, BookCatalogStore(File(target, "library")).load())
         assertEquals(position, ReadingPositionStore(File(target, "reading-positions")).load(documentHash))
