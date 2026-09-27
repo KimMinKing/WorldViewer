@@ -30,7 +30,8 @@ if (Test-Path -LiteralPath $localProperties) {
         Where-Object { $_ -match '^sdk\.dir=' } |
         Select-Object -First 1
     if ($sdkLine) {
-        $sdkDirectory = ($sdkLine -replace '^sdk\.dir=', '') -replace '\\\\', '\'
+        # local.properties uses Java-properties escaping (for example C\:\\Android\\Sdk).
+        $sdkDirectory = [regex]::Unescape(($sdkLine -replace '^sdk\.dir=', ''))
     }
 }
 if (-not $sdkDirectory) {
