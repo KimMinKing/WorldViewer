@@ -27,6 +27,8 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
     private static final String ROOT_READ_ONLY = "read-only";
     private static final String ROOT_LIMITED = "limited";
     private static final String DOCUMENT_READ_ONLY_ROOT = "read-only-root";
+    private static final String DOCUMENT_READ_ONLY_NESTED = "read-only-nested";
+    private static final String READ_ONLY_PREFIX = "read-only-file:";
     private static final String DOCUMENT_LIMITED_ROOT = "limited-root";
     private static final String LIMITED_PREFIX = "limited-file:";
     private static final long WRITE_LIMIT_BYTES = 64L * 1024L;
@@ -50,11 +52,22 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
     };
 
     private File limitedDirectory;
+    private File readOnlyDirectory;
 
     @Override
     public boolean onCreate() {
         limitedDirectory = new File(requireContextFiles(), "limited");
-        return limitedDirectory.mkdirs() || limitedDirectory.isDirectory();
+        readOnlyDirectory = new File(requireContextFiles(), "read-only");
+        File nested = new File(readOnlyDirectory, "nested");
+        if ((!limitedDirectory.mkdirs() && !limitedDirectory.isDirectory()) ||
+                (!nested.mkdirs() && !nested.isDirectory())) return false;
+        try {
+            createReadOnlyFixture(new File(readOnlyDirectory, "read-only-a.txt"), "第一章\n江湖夜雨。\n");
+            createReadOnlyFixture(new File(nested, "read-only-b.txt"), "第二章\n山河故人。\n");
+            return true;
+        } catch (IOException error) {
+            return false;
+        }
     }
 
     @Override
@@ -62,14 +75,15 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
         MatrixCursor cursor = new MatrixCursor(resolveProjection(projection, DEFAULT_ROOT_PROJECTION));
         cursor.newRow()
                 .add(Root.COLUMN_ROOT_ID, ROOT_READ_ONLY)
-                .add(Root.COLUMN_FLAGS, Root.FLAG_LOCAL_ONLY)
+                .add(Root.COLUMN_FLAGS, Root.FLAG_LOCAL_ONLY | Root.FLAG_SUPPORTS_IS_CHILD)
                 .add(Root.COLUMN_TITLE, "WorldViewer read-only test")
                 .add(Root.COLUMN_SUMMARY, "Cannot create backup files")
                 .add(Root.COLUMN_DOCUMENT_ID, DOCUMENT_READ_ONLY_ROOT)
                 .add(Root.COLUMN_AVAILABLE_BYTES, 0L);
         cursor.newRow()
                 .add(Root.COLUMN_ROOT_ID, ROOT_LIMITED)
-                .add(Root.COLUMN_FLAGS, Root.FLAG_LOCAL_ONLY | Root.FLAG_SUPPORTS_CREATE)
+                .add(Root.COLUMN_FLAGS, Root.FLAG_LOCAL_ONLY | Root.FLAG_SUPPORTS_CREATE |
+                        Root.FLAG_SUPPORTS_IS_CHILD)
                 .add(Root.COLUMN_TITLE, "WorldViewer 64 KiB test")
                 .add(Root.COLUMN_SUMMARY, "Write fails after 64 KiB")
                 .add(Root.COLUMN_DOCUMENT_ID, DOCUMENT_LIMITED_ROOT)
@@ -89,6 +103,12 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
             throws FileNotFoundException {
         MatrixCursor cursor = new MatrixCursor(resolveProjection(projection, DEFAULT_DOCUMENT_PROJECTION));
         if (DOCUMENT_READ_ONLY_ROOT.equals(parentDocumentId)) {
+            includeDocument(cursor, READ_ONLY_PREFIX + "read-only-a.txt");
+            includeDocument(cursor, DOCUMENT_READ_ONLY_NESTED);
+            return cursor;
+        }
+        if (DOCUMENT_READ_ONLY_NESTED.equals(parentDocumentId)) {
+            includeDocument(cursor, READ_ONLY_PREFIX + "nested/read-only-b.txt");
             return cursor;
         }
         if (!DOCUMENT_LIMITED_ROOT.equals(parentDocumentId)) {
@@ -128,6 +148,9 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
             CancellationSignal signal
     ) throws FileNotFoundException {
         File file = fileForDocumentId(documentId);
+        if (documentId.startsWith(READ_ONLY_PREFIX) && mode.contains("w")) {
+            throw new FileNotFoundException("Read-only fixture does not allow writes");
+        }
         if (!mode.contains("w")) {
             return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
         }
@@ -148,6 +171,9 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
 
     @Override
     public void deleteDocument(String documentId) throws FileNotFoundException {
+        if (documentId.startsWith(READ_ONLY_PREFIX)) {
+            throw new FileNotFoundException("Read-only fixture does not allow deletion");
+        }
         File file = fileForDocumentId(documentId);
         if (!file.delete() && file.exists()) {
             throw new FileNotFoundException("Cannot delete " + documentId);
@@ -156,7 +182,8 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
 
     @Override
     public String getDocumentType(String documentId) throws FileNotFoundException {
-        if (DOCUMENT_READ_ONLY_ROOT.equals(documentId) || DOCUMENT_LIMITED_ROOT.equals(documentId)) {
+        if (DOCUMENT_READ_ONLY_ROOT.equals(documentId) || DOCUMENT_READ_ONLY_NESTED.equals(documentId) ||
+                DOCUMENT_LIMITED_ROOT.equals(documentId)) {
             return Document.MIME_TYPE_DIR;
         }
         File file = fileForDocumentId(documentId);
@@ -167,7 +194,13 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
 
     @Override
     public boolean isChildDocument(String parentDocumentId, String documentId) {
-        return DOCUMENT_LIMITED_ROOT.equals(parentDocumentId) && documentId.startsWith(LIMITED_PREFIX);
+        return (DOCUMENT_LIMITED_ROOT.equals(parentDocumentId) && documentId.startsWith(LIMITED_PREFIX)) ||
+                (DOCUMENT_READ_ONLY_ROOT.equals(parentDocumentId) &&
+                        (DOCUMENT_READ_ONLY_NESTED.equals(documentId) ||
+                                (READ_ONLY_PREFIX + "read-only-a.txt").equals(documentId) ||
+                                (READ_ONLY_PREFIX + "nested/read-only-b.txt").equals(documentId))) ||
+                (DOCUMENT_READ_ONLY_NESTED.equals(parentDocumentId) &&
+                        (READ_ONLY_PREFIX + "nested/read-only-b.txt").equals(documentId));
     }
 
     @Override
@@ -184,6 +217,10 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
             includeDirectory(cursor, documentId, "Read-only destination", 0);
             return;
         }
+        if (DOCUMENT_READ_ONLY_NESTED.equals(documentId)) {
+            includeDirectory(cursor, documentId, "nested", 0);
+            return;
+        }
         if (DOCUMENT_LIMITED_ROOT.equals(documentId)) {
             includeDirectory(
                     cursor,
@@ -198,7 +235,8 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
                 .add(Document.COLUMN_DOCUMENT_ID, documentId)
                 .add(Document.COLUMN_DISPLAY_NAME, file.getName())
                 .add(Document.COLUMN_MIME_TYPE, getDocumentType(documentId))
-                .add(Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_DELETE | Document.FLAG_SUPPORTS_WRITE)
+                .add(Document.COLUMN_FLAGS, documentId.startsWith(READ_ONLY_PREFIX)
+                        ? 0 : Document.FLAG_SUPPORTS_DELETE | Document.FLAG_SUPPORTS_WRITE)
                 .add(Document.COLUMN_SIZE, file.length())
                 .add(Document.COLUMN_LAST_MODIFIED, file.lastModified());
     }
@@ -240,6 +278,15 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
     }
 
     private File fileForDocumentId(String documentId) throws FileNotFoundException {
+        if (documentId.startsWith(READ_ONLY_PREFIX)) {
+            String relative = documentId.substring(READ_ONLY_PREFIX.length());
+            if (!"read-only-a.txt".equals(relative) && !"nested/read-only-b.txt".equals(relative)) {
+                throw new FileNotFoundException("Unknown read-only document " + documentId);
+            }
+            File file = new File(readOnlyDirectory, relative);
+            if (!file.isFile()) throw new FileNotFoundException("Missing read-only fixture " + documentId);
+            return file;
+        }
         if (!documentId.startsWith(LIMITED_PREFIX)) {
             throw new FileNotFoundException("Unknown document " + documentId);
         }
@@ -256,6 +303,14 @@ public final class FailureDocumentsProvider extends DocumentsProvider {
 
     private static String documentIdForFile(File file) {
         return LIMITED_PREFIX + file.getName();
+    }
+
+    private static void createReadOnlyFixture(File file, String text) throws IOException {
+        if (file.isFile()) return;
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            output.write(text.getBytes(StandardCharsets.UTF_8));
+            output.getFD().sync();
+        }
     }
 
     private String uniqueFileName(String displayName) throws FileNotFoundException {

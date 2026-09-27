@@ -1096,7 +1096,8 @@ class MainActivity : Activity() {
                     temporary?.delete()
                     return@runOnUiThread
                 }
-                endBackupOperation()
+                if (result.isSuccess) endBackupOperation(keepRestoreGuard = true)
+                else endBackupOperation()
                 result.onSuccess { preview -> showRestorePreview(requireNotNull(temporary), displayName, preview) }
                     .onFailure { error ->
                         temporary?.delete()
@@ -1189,7 +1190,9 @@ class MainActivity : Activity() {
     private fun clearPendingRestore(file: File) {
         if (pendingRestoreFile === file) {
             pendingRestoreFile = null
+            restoreInProgress = false
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            syncReadingTimer()
         }
         file.delete()
     }
