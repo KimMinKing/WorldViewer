@@ -25,6 +25,12 @@ debug APK는 `app/build/outputs/apk/debug/app-debug.apk`에 생성된다. ADB에
 .\gradlew.bat :app:installDebug
 ```
 
+개인 debug 앱의 Azure Translator 자격 증명은 Git이 무시하는 저장소 루트의 `.worldviewer-azure.properties`에 `Key1`과 `Region`을 채운 뒤 아래 명령으로 전달할 수 있다. 스크립트는 값을 출력하지 않고 앱 전용 영역으로 보내며, debug 앱은 Android Keystore로 암호화한 다음 휴대폰의 임시 평문을 삭제한다. 이 경로는 release·benchmark 빌드에서 동작하지 않는다.
+
+```powershell
+.\tools\install-azure-translator-credentials.ps1
+```
+
 성능 회귀에는 release 설정을 상속하지만 별도 앱 ID와 debug 서명을 쓰는 비디버그 가능 `benchmark` 변형을 사용한다. 배포 산출물이 아니다.
 
 ```powershell

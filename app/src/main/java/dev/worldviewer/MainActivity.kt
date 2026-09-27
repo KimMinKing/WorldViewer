@@ -48,6 +48,7 @@ import dev.worldviewer.backup.WorldViewerRestore
 import dev.worldviewer.lookup.DictionaryLookupCoordinator
 import dev.worldviewer.lookup.DictionaryLookupRequest
 import dev.worldviewer.lookup.DictionaryLookupResponse
+import dev.worldviewer.lookup.DebugAzureCredentialImport
 import dev.worldviewer.lookup.AzureTranslationProvider
 import dev.worldviewer.lookup.AzureTranslatorCredentialStore
 import dev.worldviewer.lookup.AzureTranslatorCredentials
@@ -191,6 +192,9 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (DebugAzureCredentialImport.importIfPresent(applicationContext)) {
+            Log.i(MEANING_TAG, "Imported local Azure Translator credentials into Android Keystore")
+        }
         if (WorldViewerRestore(filesDir, ::availableStorageBytes).recoverInterruptedRestore()) {
             Log.w(RESTORE_TAG, "Recovered an interrupted backup restore before loading reader data")
         }
