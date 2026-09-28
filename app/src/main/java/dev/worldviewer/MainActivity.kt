@@ -1028,7 +1028,9 @@ class MainActivity : Activity() {
     private fun openEpubPicker() {
         val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/epub+zip"
+            // Some Samsung and cloud document providers report EPUB as ZIP or application/octet-stream.
+            // Show every openable file and validate the EPUB container after selection.
+            type = "*/*"
         }
         @Suppress("DEPRECATION")
         startActivityForResult(picker, REQUEST_OPEN_EPUB)
