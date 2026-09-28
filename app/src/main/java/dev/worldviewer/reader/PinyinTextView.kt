@@ -90,26 +90,23 @@ class PinyinTextView(context: Context) : TextView(context) {
         )
         meaningPaint.alpha = 190
         val gap = paint.textSize * 0.08f
-        val placements = savedMeanings.mapNotNull { saved ->
+        val laneHeight = paint.textSize * 0.9f
+        val anchors = savedMeanings.mapNotNull { saved ->
             val label = saved.label ?: return@mapNotNull null
             val start = saved.startUtf16 - blockStartUtf16
-            val end = saved.endUtf16 - blockStartUtf16
-            if (start !in 0 until text.length || end !in 1..text.length || end <= start) return@mapNotNull null
+            if (start !in 0 until text.length) return@mapNotNull null
             val line = textLayout.getLineForOffset(start)
-            if (textLayout.getLineForOffset(end - 1) != line) return@mapNotNull null
-            Triple(line, totalPaddingLeft + textLayout.getPrimaryHorizontal(start), label)
+            MeaningAnchor(line, totalPaddingLeft + textLayout.getPrimaryHorizontal(start),
+                label, meaningPaint.measureText(label))
         }
-        placements.forEachIndexed { index, (line, sourceX, label) ->
-            val next = placements.getOrNull(index + 1)
-            val nextX = next?.second?.takeIf { next.first == line }
-            val rightLimit = minOf(nextX?.minus(gap) ?: Float.MAX_VALUE,
-                totalPaddingLeft + textLayout.width.toFloat())
-            val available = rightLimit - sourceX
-            if (available < meaningPaint.textSize) return@forEachIndexed
-            val visible = TextUtils.ellipsize(label, meaningPaint, available, TextUtils.TruncateAt.END)
-            val sourceBaseline = totalPaddingTop + textLayout.getLineBaseline(line)
-            val meaningBaseline = sourceBaseline + paint.fontMetrics.descent + gap - meaningPaint.fontMetrics.ascent
-            canvas.drawText(visible.toString(), sourceX, meaningBaseline, meaningPaint)
+        val rightLimit = totalPaddingLeft + textLayout.width.toFloat()
+        layoutMeaningAnchors(anchors, totalPaddingLeft.toFloat(), rightLimit).forEach { placement ->
+            val visible = TextUtils.ellipsize(placement.label, meaningPaint, rightLimit - placement.x,
+                TextUtils.TruncateAt.END)
+            val sourceBaseline = totalPaddingTop + textLayout.getLineBaseline(placement.line)
+            val meaningBaseline = sourceBaseline + paint.fontMetrics.descent + gap -
+                meaningPaint.fontMetrics.ascent + placement.lane * laneHeight
+            canvas.drawText(visible.toString(), placement.x, meaningBaseline, meaningPaint)
         }
     }
 

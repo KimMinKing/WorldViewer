@@ -320,16 +320,13 @@ class TextBlockAdapter(
                 if (meaningRange.endUtf16 > startUtf16 && meaningRange.startUtf16 < endUtf16) {
                     val localStart = (meaningRange.startUtf16 - startUtf16).coerceAtLeast(0)
                     val localEnd = (meaningRange.endUtf16 - startUtf16).coerceAtMost(text.length)
-                    setSpan(
-                        BackgroundColorSpan(readerStyle.savedMeaningColor()),
-                        localStart,
-                        localEnd,
-                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-                    )
-                    if (meaningRange.label != null && meaningReservePx > 0 &&
-                        meaningRange.startUtf16 >= startUtf16 && meaningRange.endUtf16 <= endUtf16
-                    ) {
-                        setSpan(MeaningLineHeightSpan(baseDescentPx, meaningReservePx), localStart, localEnd,
+                    if (meaningRange.label == null) {
+                        setSpan(BackgroundColorSpan(readerStyle.savedMeaningColor()), localStart, localEnd,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    } else if (meaningReservePx > 0 && meaningRange.startUtf16 in startUtf16 until endUtf16) {
+                        val anchorEnd = (localStart + Character.charCount(text.codePointAt(localStart)))
+                            .coerceAtMost(text.length)
+                        setSpan(MeaningLineHeightSpan(baseDescentPx, meaningReservePx), localStart, anchorEnd,
                             Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     }
                 }
@@ -365,8 +362,9 @@ class TextBlockAdapter(
             text: CharSequence, start: Int, end: Int, spanstartv: Int, v: Int,
             fm: android.graphics.Paint.FontMetricsInt,
         ) {
-            // Max avoids stacking extra height when several saved words share a visual line.
-            fm.descent = maxOf(fm.descent, baseDescentPx + reservePx)
+            val count = (text as? Spanned)?.getSpans(start, end, MeaningLineHeightSpan::class.java)
+                ?.count { text.getSpanStart(it) in start until end } ?: 1
+            fm.descent = maxOf(fm.descent, baseDescentPx + reservePx * count)
             fm.bottom = maxOf(fm.bottom, fm.descent)
         }
     }
