@@ -4,6 +4,8 @@
     <string name="reader_loading">worldviewer %1$s · 독서 fixture 준비 중</string>
     <string name="reader_ready">%1$s · %2$s · %3$d블록 · UTF-16 %4$d자</string>
     <string name="bookshelf">책장</string>
+    <string name="reader_back_to_bookshelf">←</string>
+    <string name="reader_back_to_bookshelf_description">책장으로 돌아가기</string>
     <string name="bookshelf_loading">책장을 불러오는 중입니다.</string>
     <string name="bookshelf_settings">독서 설정</string>
     <string name="bookshelf_manage">책장 관리</string>
@@ -17,7 +19,6 @@
     <string name="bookshelf_folder_skip">이 파일 건너뛰기</string>
     <string name="bookshelf_folder_done">추가 %1$d개 · 중복 %2$d개 · 실패/건너뜀 %3$d개</string>
     <string name="bookshelf_folder_cancelled">가져오기를 취소했습니다. 이미 추가한 책은 보존됩니다.</string>
-    <string name="bookshelf_description">가져온 TXT 책 목록 열기</string>
     <string name="bookshelf_empty">책장에 추가한 TXT가 없습니다.</string>
     <string name="bookshelf_current">현재 · %1$s</string>
     <string name="bookshelf_item">%1$s\n%2$s · %3$d바이트\n최근 활동 %4$s%5$s</string>
@@ -177,6 +178,11 @@
     <string name="restore_inspect_failed">백업 검사 실패</string>
     <string name="restore_failed">복원 실패</string>
     <string name="bookmark_here">현재 위치 책갈피</string>
+    <string name="bookmark_add_short">☆</string>
+    <string name="bookmark_unavailable">가져온 책을 먼저 열어주세요.</string>
+    <string name="bookmarks">책갈피</string>
+    <string name="bookmarks_description">현재 책의 저장한 위치 목록</string>
+    <string name="bookmarks_empty">이 책에 저장한 위치가 없습니다.</string>
     <string name="annotations">주석 목록</string>
     <string name="annotations_empty">현재 책에 저장한 책갈피, 강조 또는 메모가 없습니다.</string>
     <string name="annotation_add">선택 구간 주석</string>
@@ -195,6 +201,7 @@
     <string name="annotation_delete_message">이 주석을 삭제할까요? 원문은 바뀌지 않습니다.</string>
     <string name="annotation_failed">주석 작업 실패</string>
     <string name="open_txt">TXT 추가</string>
+    <string name="open_txt_short">TXT</string>
     <string name="open_txt_description">기기에서 중국어 TXT 파일 선택</string>
     <string name="cancel_import">가져오기 취소</string>
     <string name="cancel_import_description">진행 중인 TXT 가져오기 취소</string>

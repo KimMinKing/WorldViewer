@@ -1,6 +1,7 @@
 package dev.worldviewer
 
 import android.app.Activity
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.pm.ActivityInfo
@@ -23,6 +24,7 @@ import android.provider.OpenableColumns
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.InputType
+import android.text.TextUtils
 import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
 import android.util.Log
@@ -237,6 +239,7 @@ class MainActivity : Activity() {
             }
             if (newState != RecyclerView.SCROLL_STATE_IDLE) return
             updateReadingProgress()
+            if (!navigationInFlight && !trackingReadingProgress) persistReadingPosition()
             requestVisiblePinyin()
             pendingPinyinReadings?.let { readings ->
                 pendingPinyinReadings = null
@@ -267,12 +270,15 @@ class MainActivity : Activity() {
         readerChrome = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = if (readerChromeVisible) View.VISIBLE else View.GONE
+            elevation = 6.dp.toFloat()
         }
         statusView = TextView(this).apply {
             setTextColor(Color.rgb(47, 93, 80))
             textSize = 14f
             gravity = Gravity.CENTER_VERTICAL
             setPadding(horizontalPadding, 12.dp, horizontalPadding, 12.dp)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
             text = getString(R.string.reader_loading, BuildConfig.VERSION_NAME)
         }
         selectionControls = LinearLayout(this).apply {
@@ -397,7 +403,7 @@ class MainActivity : Activity() {
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDown(event: android.view.MotionEvent): Boolean = true
 
-                override fun onSingleTapConfirmed(event: android.view.MotionEvent): Boolean {
+                override fun onSingleTapUp(event: android.view.MotionEvent): Boolean {
                     val centerStart = reader.width / 3f
                     val centerEnd = reader.width * 2f / 3f
                     if (event.x !in centerStart..centerEnd) return false
@@ -412,39 +418,65 @@ class MainActivity : Activity() {
             }
         })
 
-        readerChrome.addView(
+        val topControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        topControls.addView(
             statusView,
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
         val fileControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
         bookshelfButton = Button(this).apply {
-            text = getString(R.string.bookshelf)
-            contentDescription = getString(R.string.bookshelf_description)
+            text = getString(R.string.reader_back_to_bookshelf)
+            contentDescription = getString(R.string.reader_back_to_bookshelf_description)
+            textSize = 18f
             isEnabled = false
             setOnClickListener { showBookshelf() }
         }
+        topControls.addView(
+            Button(this).apply {
+                text = getString(R.string.bookmark_add_short)
+                textSize = 18f
+                contentDescription = getString(R.string.bookmark_here)
+                setOnClickListener { addBookmarkHere() }
+            },
+            LinearLayout.LayoutParams(56.dp, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
+        topControls.addView(
+            bookshelfButton,
+            LinearLayout.LayoutParams(56.dp, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
+        readerChrome.addView(
+            topControls,
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        )
         styleButton = Button(this).apply {
             text = getString(R.string.reader_style)
+            textSize = 12f
             contentDescription = getString(R.string.reader_style_description)
             isEnabled = false
             setOnClickListener { showReaderStyle() }
         }
         tableOfContentsButton = Button(this).apply {
             text = getString(R.string.table_of_contents)
+            textSize = 12f
             contentDescription = getString(R.string.table_of_contents_description)
             isEnabled = false
             setOnClickListener { showTableOfContentsMenu() }
         }
         openTxtButton = Button(this).apply {
-            text = getString(R.string.open_txt)
+            text = getString(R.string.open_txt_short)
+            textSize = 12f
             contentDescription = getString(R.string.open_txt_description)
             setOnClickListener { openTxtPicker() }
         }
         cancelImportButton = Button(this).apply {
             text = getString(R.string.cancel_import)
+            textSize = 12f
             contentDescription = getString(R.string.cancel_import_description)
             visibility = View.GONE
             setOnClickListener {
@@ -454,7 +486,12 @@ class MainActivity : Activity() {
             }
         }
         fileControls.addView(
-            bookshelfButton,
+            Button(this).apply {
+                text = getString(R.string.bookmarks)
+                textSize = 12f
+                contentDescription = getString(R.string.bookmarks_description)
+                setOnClickListener { showBookmarks() }
+            },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
         fileControls.addView(
@@ -949,13 +986,30 @@ class MainActivity : Activity() {
             }
             return
         }
-        setReaderChromeVisible(!readerChromeVisible)
+        setReaderChromeVisible(!readerChromeVisible, animate = true)
     }
 
-    private fun setReaderChromeVisible(visible: Boolean) {
+    private fun setReaderChromeVisible(visible: Boolean, animate: Boolean = false) {
         if (!::readerChrome.isInitialized || readerChromeVisible == visible) return
         readerChromeVisible = visible
-        readerChrome.visibility = if (visible) View.VISIBLE else View.GONE
+        readerChrome.animate().cancel()
+        if (!animate || !ValueAnimator.areAnimatorsEnabled()) {
+            readerChrome.alpha = 1f
+            readerChrome.translationY = 0f
+            readerChrome.visibility = if (visible) View.VISIBLE else View.GONE
+        } else if (visible) {
+            readerChrome.alpha = 0f
+            readerChrome.translationY = -8.dp.toFloat()
+            readerChrome.visibility = View.VISIBLE
+            readerChrome.animate().alpha(1f).translationY(0f).setDuration(READER_CHROME_ANIMATION_MS).start()
+        } else {
+            readerChrome.animate().alpha(0f).translationY(-8.dp.toFloat())
+                .setDuration(READER_CHROME_ANIMATION_MS)
+                .withEndAction {
+                    if (!readerChromeVisible) readerChrome.visibility = View.GONE
+                }
+                .start()
+        }
         if (::reader.isInitialized) {
             reader.sendAccessibilityEvent(
                 android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
@@ -2154,11 +2208,11 @@ class MainActivity : Activity() {
         val button = if (dark) Color.rgb(52, 56, 53) else Color.rgb(230, 226, 217)
         rootLayout.setBackgroundColor(if (bookshelfHome.visibility == View.VISIBLE) Color.rgb(250, 248, 243) else background)
         reader.setBackgroundColor(background)
-        readerChrome.setBackgroundColor(background)
+        readerChrome.setBackgroundColor(Color.argb(238, Color.red(background), Color.green(background), Color.blue(background)))
         selectionControls.setBackgroundColor(background)
         statusView.setTextColor(accent)
         readingProgressView.setTextColor(accent)
-        applyControlTheme(readerChrome, text, button)
+        applyControlTheme(readerChrome, text, Color.argb(238, Color.red(button), Color.green(button), Color.blue(button)))
         applyControlTheme(selectionControls, text, button)
         applySystemBarAppearance(dark && bookshelfHome.visibility != View.VISIBLE)
     }
@@ -2689,7 +2743,10 @@ class MainActivity : Activity() {
     }
 
     private fun addBookmarkHere() {
-        val position = captureReadingPosition() ?: return
+        val position = captureReadingPosition() ?: run {
+            Toast.makeText(this, R.string.bookmark_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
         val now = System.currentTimeMillis()
         val value = UserAnnotation(
             id = UUID.randomUUID().toString(),
@@ -2704,7 +2761,12 @@ class MainActivity : Activity() {
             createdAtEpochMillis = now,
             updatedAtEpochMillis = now,
         )
-        updateAnnotations({ it + value }) { showAnnotations() }
+        updateAnnotations({ values ->
+            if (values.any {
+                    it.type == AnnotationType.BOOKMARK &&
+                        it.documentSha256 == value.documentSha256 && it.startUtf16 == value.startUtf16
+                }) values else values + value
+        }) { showBookmarks() }
     }
 
     private fun showSelectionAnnotationMenu() {
@@ -2767,32 +2829,44 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showAnnotations() {
-        val documentId = currentDocumentSha256 ?: return
+    private fun showAnnotations() = showAnnotationList(bookmarksOnly = false)
+
+    private fun showBookmarks() = showAnnotationList(bookmarksOnly = true)
+
+    private fun showAnnotationList(bookmarksOnly: Boolean) {
+        val documentId = currentDocumentSha256 ?: run {
+            Toast.makeText(this, R.string.bookmark_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
         blockExecutor.execute {
             val result = runCatching {
                 userAnnotationStore().load()
-                    .filter { it.documentSha256 == documentId }
+                    .filter {
+                        it.documentSha256 == documentId &&
+                            (!bookmarksOnly || it.type == AnnotationType.BOOKMARK)
+                    }
                     .sortedWith(compareBy<UserAnnotation> { it.startUtf16 }.thenBy { it.createdAtEpochMillis })
             }
             runOnUiThread {
                 if (isDestroyed || currentDocumentSha256 != documentId) return@runOnUiThread
-                result.onSuccess(::showAnnotationsDialog).onFailure(::showAnnotationFailure)
+                result.onSuccess { showAnnotationsDialog(it, bookmarksOnly) }
+                    .onFailure(::showAnnotationFailure)
             }
         }
     }
 
-    private fun showAnnotationsDialog(values: List<UserAnnotation>) {
+    private fun showAnnotationsDialog(values: List<UserAnnotation>, bookmarksOnly: Boolean) {
+        val title = if (bookmarksOnly) R.string.bookmarks else R.string.annotations
         if (values.isEmpty()) {
             AlertDialog.Builder(this)
-                .setTitle(R.string.annotations)
-                .setMessage(R.string.annotations_empty)
+                .setTitle(title)
+                .setMessage(if (bookmarksOnly) R.string.bookmarks_empty else R.string.annotations_empty)
                 .setPositiveButton(android.R.string.ok, null)
                 .show()
             return
         }
         AlertDialog.Builder(this)
-            .setTitle(R.string.annotations)
+            .setTitle(title)
             .setItems(values.map { value ->
                 getString(
                     R.string.annotation_item,
@@ -2800,12 +2874,14 @@ class MainActivity : Activity() {
                     ReadingProgress.fromOffset(value.startUtf16, documentUtf16Length) / 10.0,
                     annotationPreview(value),
                 )
-            }.toTypedArray()) { _, which -> values.getOrNull(which)?.let(::showAnnotationActions) }
+            }.toTypedArray()) { _, which ->
+                values.getOrNull(which)?.let { showAnnotationActions(it, bookmarksOnly) }
+            }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
-    private fun showAnnotationActions(value: UserAnnotation) {
+    private fun showAnnotationActions(value: UserAnnotation, bookmarksOnly: Boolean) {
         val neutralLabel = if (value.type == AnnotationType.NOTE) R.string.note_edit else R.string.annotation_delete
         AlertDialog.Builder(this)
             .setTitle(annotationTypeLabel(value.type))
@@ -2815,7 +2891,8 @@ class MainActivity : Activity() {
                 navigateToUtf16(value.startUtf16, origin, reader.paddingTop + 1)
             }
             .setNeutralButton(neutralLabel) { _, _ ->
-                if (value.type == AnnotationType.NOTE) editNote(value) else confirmDeleteAnnotation(value)
+                if (value.type == AnnotationType.NOTE) editNote(value)
+                else confirmDeleteAnnotation(value, bookmarksOnly)
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
@@ -2846,14 +2923,14 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun confirmDeleteAnnotation(value: UserAnnotation) {
+    private fun confirmDeleteAnnotation(value: UserAnnotation, bookmarksOnly: Boolean = false) {
         AlertDialog.Builder(this)
             .setTitle(R.string.annotation_delete)
             .setMessage(R.string.annotation_delete_message)
             .setPositiveButton(R.string.annotation_delete) { _, _ ->
                 updateAnnotations({ values -> values.filterNot { it.id == value.id } }) {
                     refreshHighlights()
-                    showAnnotations()
+                    if (bookmarksOnly) showBookmarks() else showAnnotations()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -3573,7 +3650,15 @@ class MainActivity : Activity() {
                 NAVIGATION_TAG,
                 "targetUtf16=$target block=$position returnUtf16=${returnAnchor.globalUtf16}",
             )
-            reader.postDelayed({ updateReadingProgress() }, NAVIGATION_SETTLE_DELAY_MS)
+            reader.postDelayed(
+                {
+                    if (generation == navigationGeneration && !navigationInFlight) {
+                        updateReadingProgress()
+                        persistReadingPosition()
+                    }
+                },
+                NAVIGATION_SETTLE_DELAY_MS,
+            )
         }
         reader.postDelayed(
             {
@@ -4055,6 +4140,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val READING_TIME_TICK_MS = 15_000L
+        const val READER_CHROME_ANIMATION_MS = 110L
         const val MAX_BLOCK_UTF16 = 768
         const val MAX_TRANSLATION_SELECTION_UTF16 = AzureTranslationProvider.MAX_REQUEST_CHARACTERS * 2
         const val REQUEST_OPEN_TXT = 1001
