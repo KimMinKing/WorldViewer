@@ -1,17 +1,26 @@
 # WorldViewer 현재 상태
 
 마지막 확인: 2026-09-28
-현재 단계: 12a 저장한 뜻 표시 실제 기기 검증 대기
+현재 단계: 12a 저장한 뜻 표시 플립6 설치 대기
 
 ## 현재 단계
 
 - 단계: 12a — 책장·설정·독서 기록 정리
-- 상태: 저장한 뜻 범위 표시와 표시 설정 구현 완료, Galaxy Z Flip4 재연결 후 화면 검증 대기
+- 상태: 저장한 뜻 범위 표시와 표시 설정 구현 완료, Galaxy Z Flip4에 설치·실행 확인. Galaxy Z Flip6 무선 ADB 페어링 대기
 - 완료한 작업: 책장·폴더 TXT·독서 설정/기록, 간결한 플로팅 메뉴와 즉시 책갈피, DRM 없는 EPUB, 책장 이름·표지 편집, 비디버그 시험판 APK
-- 다음 작업: Galaxy Z Flip4에서 단어·문장 뜻을 저장해 옅은 표시, 설정 토글, 중복 저장 동작을 확인
+- 다음 작업: Galaxy Z Flip6 무선 ADB를 페어링하고 `0.1.5-dev-trial`을 데이터 유지 업데이트 설치·실행 확인
 - 무선 ADB로 Galaxy Z Flip4에서 책장·독서·폴더 선택과 미리보기를 확인했다. USB ADB는 `offline`이 반복되어 무선 연결을 사용한다.
 
 ## 확인한 사실
+
+### 2026-09-28 — 플립6용 최신 시험판 준비
+
+- 상태: 검증 대기
+- 변경: 저장한 뜻 표시가 포함된 시험판을 versionCode 6, `0.1.5-dev-trial`로 올리고 `dist/WorldViewer-0.1.5-trial-2026-09-28.apk`를 만들었다. `README.md`의 전달 경로를 갱신했다.
+- 검증: `\.\gradlew.bat :app:assembleTrial :app:lintTrial --console=plain` 성공. APK 2,466,253바이트, SHA-256 `8AA67288F5604202E1F4A83626E3CCE5B4B9FD9011BC894C0E3A3DEC6FF896ED`. `aapt`로 앱 ID `dev.worldviewer`, versionCode 6, minSdk 26을 확인했고 `apksigner` 서명 검증에 성공했다. 직전 변경의 `assembleDebug test lint`도 성공했다.
+- 기기 확인: Galaxy Z Flip6의 무선 디버깅 서비스가 `192.168.219.104:42963`으로 발견되고 TCP 포트는 열려 있지만 `adb connect`는 실패했다. 이 PC와의 페어링 코드·페어링 포트가 필요하다. 플립6에 이번 APK를 설치했다고 기록하지 않는다.
+- 미해결: 실제 플립6 업데이트와 저장한 뜻 표시·EPUB 재확인은 대기 중이다.
+- 다음 작업: 페어링 화면의 별도 포트와 코드로 연결한 뒤 설치된 버전·데이터 보존·실행을 확인한다.
 
 ### 2026-09-28 — 저장한 뜻의 원문 표시
 
