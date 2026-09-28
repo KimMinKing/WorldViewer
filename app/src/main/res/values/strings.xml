@@ -9,6 +9,10 @@
     <string name="bookshelf_loading">책장을 불러오는 중입니다.</string>
     <string name="bookshelf_settings">독서 설정</string>
     <string name="bookshelf_manage">책장 관리</string>
+    <string name="bookshelf_rename">이름 바꾸기</string>
+    <string name="bookshelf_choose_cover">표지 이미지 선택</string>
+    <string name="bookshelf_reset_cover">기본 표지로 되돌리기</string>
+    <string name="bookshelf_custom_cover">%1$s 사용자 표지</string>
     <string name="bookshelf_add_folder">폴더의 TXT 가져오기</string>
     <string name="bookshelf_folder_scan_title">폴더 TXT 확인</string>
     <string name="bookshelf_folder_scanning">선택한 폴더와 하위 폴더의 TXT를 확인하는 중입니다.</string>
@@ -180,6 +184,7 @@
     <string name="restore_failed">복원 실패</string>
     <string name="bookmark_here">현재 위치 책갈피</string>
     <string name="bookmark_add_short">☆</string>
+    <string name="bookmark_added_short">★</string>
     <string name="bookmark_unavailable">가져온 책을 먼저 열어주세요.</string>
     <string name="bookmarks">책갈피</string>
     <string name="bookmarks_description">현재 책의 저장한 위치 목록</string>
@@ -205,6 +210,10 @@
     <string name="open_epub">EPUB 추가</string>
     <string name="open_txt_short">TXT</string>
     <string name="open_txt_description">기기에서 중국어 TXT 파일 선택</string>
+    <string name="reader_pinyin_menu">병음</string>
+    <string name="pinyin_original">원문만</string>
+    <string name="pinyin_all">전체 병음</string>
+    <string name="pinyin_selection">선택 병음</string>
     <string name="cancel_import">가져오기 취소</string>
     <string name="cancel_import_description">진행 중인 TXT 가져오기 취소</string>
     <string name="reader_importing">%1$s 원본을 보존하는 중</string>

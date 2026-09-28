@@ -132,6 +132,19 @@ class BookCatalogStore(private val directory: File) {
         return updated
     }
 
+    fun rename(bookId: String, displayName: String): BookCatalog {
+        if (!SHA256.matches(bookId)) throw TxtImportException("책 식별자가 올바르지 않습니다.")
+        val title = displayName.trim()
+        if (title.isBlank() || title.length > 200) throw TxtImportException("책 제목이 올바르지 않습니다.")
+        val existing = load() ?: throw TxtImportException("책 목록을 찾을 수 없습니다.")
+        if (existing.books.none { it.bookId == bookId }) throw TxtImportException("목록에서 책을 찾을 수 없습니다.")
+        val updated = existing.copy(books = existing.books.map { book ->
+            if (book.bookId == bookId) book.copy(displayName = title) else book
+        })
+        save(updated)
+        return updated
+    }
+
     fun save(catalog: BookCatalog) {
         saveInternal(catalog) { temporary ->
             FileOutputStream(temporary).use { raw ->

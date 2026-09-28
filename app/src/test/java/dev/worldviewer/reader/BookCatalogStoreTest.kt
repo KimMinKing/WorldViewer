@@ -95,6 +95,21 @@ class BookCatalogStoreTest {
     }
 
     @Test
+    fun `renaming a book preserves identity timestamps and other entries`() {
+        val directory = Files.createTempDirectory("worldviewer-catalog-rename").toFile()
+        val store = BookCatalogStore(directory)
+        store.reconcileCurrent(ImportMetadata("$hashA.original", "이전.txt", hashA, 10, "UTF-8"), 100)
+        store.reconcileCurrent(ImportMetadata("$hashB.original", "다른.txt", hashB, 20, "UTF-8"), 200)
+
+        val renamed = store.rename(hashA, "  새 제목  ")
+
+        assertEquals("새 제목", renamed.books.single { it.bookId == hashA }.displayName)
+        assertEquals("다른.txt", renamed.books.single { it.bookId == hashB }.displayName)
+        assertEquals(hashB, renamed.currentBookId)
+        assertEquals(renamed, store.load())
+    }
+
+    @Test
     fun `failed replacement keeps the prior catalog and removes the partial`() {
         val directory = Files.createTempDirectory("worldviewer-catalog-failure").toFile()
         val store = BookCatalogStore(directory)

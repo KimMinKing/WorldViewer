@@ -39,6 +39,19 @@ class WorldViewerBackupTest {
         assertTrue(without.entries.none { it.category == BackupCategory.EPUB_SOURCE })
         assertTrue(with.entries.any { it.category == BackupCategory.EPUB_SOURCE })
     }
+
+    @Test
+    fun `custom book cover is included as user data`() {
+        val root = temporary.newFolder("cover-backup")
+        val book = "c".repeat(64)
+        write(root, "book-covers/$book.cover", "image-bytes")
+
+        val preview = WorldViewerBackup(root).create(temporary.newFile("cover.wvb"), false, 3)
+
+        assertTrue(preview.entries.any {
+            it.category == BackupCategory.BOOK_COVER && it.relativePath == "book-covers/$book.cover"
+        })
+    }
     @get:Rule
     val temporary = TemporaryFolder()
 

@@ -12,6 +12,8 @@ import android.content.Context
 import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.BitmapFactory
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -43,6 +45,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.ImageView
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.SeekBar
@@ -103,6 +106,8 @@ import dev.worldviewer.reader.ReadingTimeLedger
 import dev.worldviewer.reader.ReadingTimeStore
 import dev.worldviewer.reader.ReadingProgress
 import dev.worldviewer.reader.ReaderStyle
+import dev.worldviewer.reader.ReaderTapAction
+import dev.worldviewer.reader.ReaderTapZones
 import dev.worldviewer.reader.ReaderStyleColors
 import dev.worldviewer.reader.ReaderStylePreferences
 import dev.worldviewer.reader.ReaderStyleStore
@@ -145,6 +150,9 @@ import java.util.Date
 import java.util.Locale
 import java.time.LocalDate
 import java.time.ZoneId
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 class MainActivity : Activity() {
     private val blockExecutor = Executors.newSingleThreadExecutor()
@@ -192,6 +200,7 @@ class MainActivity : Activity() {
     private lateinit var readerLayoutManager: LinearLayoutManager
     private lateinit var statusView: TextView
     private lateinit var bookshelfButton: Button
+    private lateinit var bookmarkButton: Button
     private lateinit var styleButton: Button
     private lateinit var tableOfContentsButton: Button
     private lateinit var searchButton: Button
@@ -222,6 +231,7 @@ class MainActivity : Activity() {
     private var activeSearchDialog: AlertDialog? = null
     private var searchGeneration = 0L
     private var pendingBackupIncludesOriginals: Boolean? = null
+    private var pendingCoverBookId: String? = null
     private var pendingRestoreFile: File? = null
     private var backupOperationDialog: AlertDialog? = null
     private var backupOperationInProgress = false
@@ -270,6 +280,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(250, 248, 243))
         }
         val root = rootLayout
+        pendingCoverBookId = savedInstanceState?.getString(STATE_PENDING_COVER_BOOK_ID)
         readerChromeVisible = savedInstanceState?.getBoolean(STATE_READER_CHROME_VISIBLE, false) ?: false
         readerChrome = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -408,30 +419,22 @@ class MainActivity : Activity() {
                 override fun onDown(event: android.view.MotionEvent): Boolean = true
 
                 override fun onSingleTapUp(event: android.view.MotionEvent): Boolean {
-                    val centerStart = reader.width / 3f
-                    val centerEnd = reader.width * 2f / 3f
-                    if (event.x !in centerStart..centerEnd) return false
-                    return reader.performClick()
+                    return when (ReaderTapZones.action(event.y, reader.height)) {
+                        ReaderTapAction.PREVIOUS_PAGE -> pageReader(-1)
+                        ReaderTapAction.TOGGLE_CONTROLS -> reader.performClick()
+                        ReaderTapAction.NEXT_PAGE -> pageReader(1)
+                    }
                 }
             },
         )
-        reader.addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
-            override fun onInterceptTouchEvent(recyclerView: RecyclerView, event: android.view.MotionEvent): Boolean {
-                readerTapDetector.onTouchEvent(event)
-                return false
-            }
-        })
+        reader.setOnTouchListener { _, event ->
+            readerTapDetector.onTouchEvent(event)
+            false
+        }
 
         val topControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-        }
-        topControls.addView(
-            statusView,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        val fileControls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
         }
         bookshelfButton = Button(this).apply {
             text = getString(R.string.reader_back_to_bookshelf)
@@ -441,16 +444,21 @@ class MainActivity : Activity() {
             setOnClickListener { showBookshelf() }
         }
         topControls.addView(
-            Button(this).apply {
+            bookshelfButton,
+            LinearLayout.LayoutParams(56.dp, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
+        topControls.addView(
+            statusView,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        bookmarkButton = Button(this).apply {
                 text = getString(R.string.bookmark_add_short)
                 textSize = 18f
                 contentDescription = getString(R.string.bookmark_here)
                 setOnClickListener { addBookmarkHere() }
-            },
-            LinearLayout.LayoutParams(56.dp, LinearLayout.LayoutParams.WRAP_CONTENT),
-        )
+            }
         topControls.addView(
-            bookshelfButton,
+            bookmarkButton,
             LinearLayout.LayoutParams(56.dp, LinearLayout.LayoutParams.WRAP_CONTENT),
         )
         readerChrome.addView(
@@ -489,49 +497,15 @@ class MainActivity : Activity() {
                 statusView.text = getString(R.string.reader_import_cancelling)
             }
         }
-        fileControls.addView(
-            Button(this).apply {
-                text = getString(R.string.bookmarks)
-                textSize = 12f
-                contentDescription = getString(R.string.bookmarks_description)
-                setOnClickListener { showBookmarks() }
-            },
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        fileControls.addView(
-            styleButton,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        fileControls.addView(
-            tableOfContentsButton,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        fileControls.addView(
-            openTxtButton,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        fileControls.addView(
-            cancelImportButton,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        readerChrome.addView(fileControls, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         val pinyinControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
-        fun pinyinButton(label: String, accessibilityLabel: String, mode: PinyinDisplayMode) {
-            pinyinControls.addView(
-                Button(this).apply {
-                    text = label
-                    textSize = 12f
-                    contentDescription = accessibilityLabel
-                    setOnClickListener { changePinyinMode(mode) }
-                },
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-            )
-        }
-        pinyinButton("원문", "병음 숨기기", PinyinDisplayMode.ORIGINAL)
-        pinyinButton("전체 병음", "화면의 모든 한자 병음 보기", PinyinDisplayMode.ALL)
-        pinyinButton("선택 병음", "선택한 한자의 병음만 보기", PinyinDisplayMode.SELECTION)
+        pinyinControls.addView(Button(this).apply {
+            text = getString(R.string.reader_pinyin_menu)
+            textSize = 12f
+            setOnClickListener { showPinyinMenu() }
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        pinyinControls.addView(tableOfContentsButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         searchButton = Button(this).apply {
             text = getString(R.string.search)
             textSize = 12f
@@ -545,6 +519,7 @@ class MainActivity : Activity() {
             searchButton,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
+        pinyinControls.addView(styleButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         pinyinControls.addView(
             Button(this).apply {
                 text = getString(R.string.reader_tools)
@@ -704,6 +679,10 @@ class MainActivity : Activity() {
                 val book = bookshelfSnapshot?.catalog?.books?.getOrNull(position) ?: return@setOnItemClickListener
                 if (book.bookId == currentDocumentSha256) openReaderFromBookshelf()
                 else openCatalogBook(book)
+            }
+            setOnItemLongClickListener { _, _, position, _ ->
+                bookshelfSnapshot?.catalog?.books?.getOrNull(position)?.let(::showBookEditMenu)
+                true
             }
         }
         bookshelfHome.addView(bookshelfItems, LinearLayout.LayoutParams(
@@ -992,6 +971,21 @@ class MainActivity : Activity() {
             return
         }
         setReaderChromeVisible(!readerChromeVisible, animate = true)
+    }
+
+    private fun pageReader(direction: Int): Boolean {
+        if (::selectionControls.isInitialized && selectionControls.visibility == View.VISIBLE) {
+            handleReaderChromeClick()
+            return true
+        }
+        setReaderChromeVisible(false, animate = true)
+        if (::bookmarkButton.isInitialized) bookmarkButton.text = getString(R.string.bookmark_add_short)
+        val page = (reader.height * 0.88f).toInt().coerceAtLeast(1)
+        reader.stopScroll()
+        val distance = direction.coerceIn(-1, 1) * page
+        reader.post { reader.smoothScrollBy(0, distance) }
+        Log.i(NAVIGATION_TAG, "tap page direction=$direction pixels=$distance")
+        return true
     }
 
     private fun setReaderChromeVisible(visible: Boolean, animate: Boolean = false) {
@@ -1384,18 +1378,59 @@ class MainActivity : Activity() {
         bookshelfSnapshot = snapshot
         bookshelfStatusView.visibility = View.GONE
         bookshelfEmptyView.visibility = if (snapshot.catalog.books.isEmpty()) View.VISIBLE else View.GONE
+        val labels = bookshelfLabels(snapshot)
         bookshelfItems.adapter = object : ArrayAdapter<CharSequence>(
             this,
             android.R.layout.simple_list_item_1,
-            bookshelfLabels(snapshot),
+            labels,
         ) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
-                (super.getView(position, convertView, parent) as TextView).apply {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val book = snapshot.catalog.books[position]
+                val row = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(8.dp, 8.dp, 8.dp, 8.dp)
+                }
+                row.addView(bookCoverView(book), LinearLayout.LayoutParams(64.dp, 88.dp).apply {
+                    marginEnd = 12.dp
+                })
+                row.addView(TextView(context).apply {
+                    text = labels[position].toString().replace(Regex("^■ .  "), "")
                     isSingleLine = false
                     maxLines = 4
                     textSize = 16f
-                    setPadding(12.dp, 12.dp, 12.dp, 12.dp)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                return row
+            }
+        }
+    }
+
+    private fun bookCoverView(book: BookCatalogEntry): View {
+        val coverFile = File(bookCoverDirectory(), "${book.bookId}.cover")
+        if (coverFile.isFile) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(coverFile.path, bounds)
+            var sample = 1
+            while (bounds.outWidth / sample > 256 || bounds.outHeight / sample > 352) sample *= 2
+            val options = BitmapFactory.Options().apply { inSampleSize = sample }
+            BitmapFactory.decodeFile(coverFile.path, options)?.let { bitmap ->
+                return ImageView(this).apply {
+                    setImageBitmap(bitmap)
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    contentDescription = getString(R.string.bookshelf_custom_cover, book.displayName)
                 }
+            }
+        }
+        val generated = AutoBookCover.from(book.bookId, book.displayName)
+        return TextView(this).apply {
+            text = generated.initial
+            textSize = 24f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                setColor(generated.colorArgb)
+                cornerRadius = 6.dp.toFloat()
+            }
         }
     }
 
@@ -1495,6 +1530,109 @@ class MainActivity : Activity() {
             updateActions()
         }
         dialog.show()
+    }
+
+    private fun showBookEditMenu(book: BookCatalogEntry) {
+        AlertDialog.Builder(this)
+            .setTitle(book.displayName)
+            .setItems(arrayOf(
+                getString(R.string.bookshelf_rename),
+                getString(R.string.bookshelf_choose_cover),
+                getString(R.string.bookshelf_reset_cover),
+            )) { _, which ->
+                when (which) {
+                    0 -> showRenameBook(book)
+                    1 -> openBookCoverPicker(book)
+                    2 -> {
+                        File(bookCoverDirectory(), "${book.bookId}.cover").delete()
+                        showBookshelf()
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showRenameBook(book: BookCatalogEntry) {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            setText(book.displayName)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.bookshelf_rename)
+            .setView(input)
+            .setPositiveButton(R.string.table_of_contents_save) { _, _ ->
+                val title = input.text.toString().trim()
+                blockExecutor.execute {
+                    val result = runCatching {
+                        val catalog = bookCatalogStore().rename(book.bookId, title)
+                        if (catalog.currentBookId == book.bookId) {
+                            metadataStore().load()?.let { metadataStore().save(it.copy(displayName = title)) }
+                        }
+                    }
+                    runOnUiThread {
+                        if (!isDestroyed) result.onSuccess { showBookshelf() }
+                            .onFailure { showLibraryFailure(getString(R.string.bookshelf_rename), it) }
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun openBookCoverPicker(book: BookCatalogEntry) {
+        pendingCoverBookId = book.bookId
+        @Suppress("DEPRECATION")
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+        }, REQUEST_OPEN_COVER)
+    }
+
+    private fun importBookCover(uri: Uri, bookId: String) {
+        blockExecutor.execute {
+            val result = runCatching {
+                val directory = bookCoverDirectory().apply { if (!exists() && !mkdirs()) error("표지 저장 공간을 만들 수 없습니다.") }
+                val temporary = File.createTempFile("cover-", ".partial", directory)
+                try {
+                    var size = 0L
+                    contentResolver.openInputStream(uri).use { input ->
+                        requireNotNull(input) { "선택한 이미지를 읽을 수 없습니다." }
+                        temporary.outputStream().use { output ->
+                            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read < 0) break
+                                size += read
+                                if (size > MAX_COVER_BYTES) error("표지 이미지는 10MiB 이하여야 합니다.")
+                                output.write(buffer, 0, read)
+                            }
+                        }
+                    }
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(temporary.path, bounds)
+                    if (bounds.outWidth !in 1..MAX_COVER_DIMENSION || bounds.outHeight !in 1..MAX_COVER_DIMENSION) {
+                        error("지원하지 않는 표지 이미지입니다.")
+                    }
+                    val target = File(directory, "$bookId.cover")
+                    try {
+                        Files.move(
+                            temporary.toPath(), target.toPath(),
+                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING,
+                        )
+                    } catch (_: AtomicMoveNotSupportedException) {
+                        Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    }
+                } finally {
+                    temporary.delete()
+                }
+            }
+            runOnUiThread {
+                if (!isDestroyed) result.onSuccess { showBookshelf() }
+                    .onFailure { showLibraryFailure(getString(R.string.bookshelf_choose_cover), it) }
+            }
+        }
     }
 
     private fun openCatalogBook(book: BookCatalogEntry) {
@@ -2309,6 +2447,12 @@ class MainActivity : Activity() {
     @Deprecated("Uses the platform file picker without adding an Activity Result dependency.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_OPEN_COVER) {
+            val bookId = pendingCoverBookId
+            pendingCoverBookId = null
+            if (resultCode == RESULT_OK && bookId != null) data?.data?.let { importBookCover(it, bookId) }
+            return
+        }
         if (requestCode == REQUEST_OPEN_FOLDER) {
             if (resultCode == RESULT_OK) data?.data?.let(::scanFolder)
             return
@@ -2741,6 +2885,8 @@ class MainActivity : Activity() {
 
     private fun epubSourceDirectory(): File = File(filesDir, "epub-sources")
 
+    private fun bookCoverDirectory(): File = File(filesDir, "book-covers")
+
     private fun metadataStore(): ImportMetadataStore = ImportMetadataStore(importDirectory())
 
     private fun bookCatalogStore(): BookCatalogStore = BookCatalogStore(File(filesDir, "library"))
@@ -2786,6 +2932,22 @@ class MainActivity : Activity() {
             PINYIN_UI_TAG,
             "mode=$mode position=${anchor?.position} utf16=${anchor?.globalUtf16}",
         )
+    }
+
+    private fun showPinyinMenu() {
+        val labels = arrayOf(
+            getString(R.string.pinyin_original),
+            getString(R.string.pinyin_all),
+            getString(R.string.pinyin_selection),
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.reader_pinyin_menu)
+            .setSingleChoiceItems(labels, pinyinMode.ordinal) { dialog, which ->
+                PinyinDisplayMode.entries.getOrNull(which)?.let(::changePinyinMode)
+                dialog.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun requestVisiblePinyin() {
@@ -2852,12 +3014,26 @@ class MainActivity : Activity() {
             createdAtEpochMillis = now,
             updatedAtEpochMillis = now,
         )
-        updateAnnotations({ values ->
-            if (values.any {
-                    it.type == AnnotationType.BOOKMARK &&
-                        it.documentSha256 == value.documentSha256 && it.startUtf16 == value.startUtf16
-                }) values else values + value
-        }) { showBookmarks() }
+        bookmarkButton.text = getString(R.string.bookmark_added_short)
+        blockExecutor.execute {
+            val result = runCatching {
+                val store = userAnnotationStore()
+                val values = store.load()
+                if (values.none {
+                        it.type == AnnotationType.BOOKMARK &&
+                            it.documentSha256 == value.documentSha256 && it.startUtf16 == value.startUtf16
+                    }) {
+                    store.save(values + value)
+                }
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onFailure { error ->
+                    bookmarkButton.text = getString(R.string.bookmark_add_short)
+                    showAnnotationFailure(error)
+                }
+            }
+        }
     }
 
     private fun showSelectionAnnotationMenu() {
@@ -3971,6 +4147,7 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(STATE_READER_CHROME_VISIBLE, readerChromeVisible)
+        pendingCoverBookId?.let { outState.putString(STATE_PENDING_COVER_BOOK_ID, it) }
         outState.putBoolean(STATE_BOOKSHELF_VISIBLE, bookshelfHome.visibility == View.VISIBLE)
         if (::reader.isInitialized && ::readerLayoutManager.isInitialized) {
             val position = readerLayoutManager.findFirstVisibleItemPosition()
@@ -4239,8 +4416,12 @@ class MainActivity : Activity() {
         const val REQUEST_OPEN_BACKUP = 1003
         const val REQUEST_OPEN_FOLDER = 1004
         const val REQUEST_OPEN_EPUB = 1005
+        const val REQUEST_OPEN_COVER = 1006
+        const val MAX_COVER_BYTES = 10L * 1024L * 1024L
+        const val MAX_COVER_DIMENSION = 10_000
         const val STATE_FIRST_VISIBLE_POSITION = "reader.firstVisiblePosition"
         const val STATE_READER_CHROME_VISIBLE = "reader.chromeVisible"
+        const val STATE_PENDING_COVER_BOOK_ID = "bookshelf.pendingCoverBookId"
         const val STATE_BOOKSHELF_VISIBLE = "bookshelf.visible"
         const val STATE_FIRST_VISIBLE_OFFSET = "reader.firstVisibleOffset"
         const val STATE_READER_WIDTH = "reader.width"

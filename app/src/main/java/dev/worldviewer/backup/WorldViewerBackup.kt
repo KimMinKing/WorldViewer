@@ -28,6 +28,7 @@ enum class BackupCategory {
     USER_ANNOTATION,
     EPUB_SOURCE,
     EPUB_PUBLICATION,
+    BOOK_COVER,
 }
 
 data class BackupEntry(
@@ -181,6 +182,7 @@ class WorldViewerBackup(
             addMatching("reading-positions", POSITION_FILE, BackupCategory.READING_POSITION)
             addMatching("manual-chapters", CHAPTER_FILE, BackupCategory.MANUAL_CHAPTER)
             addMatching("epub-publications", EPUB_PUBLICATION_FILE, BackupCategory.EPUB_PUBLICATION)
+            addMatching("book-covers", BOOK_COVER_FILE, BackupCategory.BOOK_COVER)
             if (includeOriginalTexts) {
                 addMatching("imports", ORIGINAL_FILE, BackupCategory.ORIGINAL_TEXT)
                 addMatching("epub-sources", EPUB_SOURCE_FILE, BackupCategory.EPUB_SOURCE)
@@ -304,6 +306,8 @@ class WorldViewerBackup(
             BackupCategory.EPUB_SOURCE
         path.startsWith("epub-publications/") && EPUB_PUBLICATION_FILE.matches(path.substringAfter('/')) ->
             BackupCategory.EPUB_PUBLICATION
+        path.startsWith("book-covers/") && BOOK_COVER_FILE.matches(path.substringAfter('/')) ->
+            BackupCategory.BOOK_COVER
         else -> null
     }
 
@@ -374,5 +378,6 @@ class WorldViewerBackup(
         val CHAPTER_FILE = Regex("[0-9a-f]{64}\\.chapters")
         val EPUB_SOURCE_FILE = Regex("[0-9a-f]{64}\\.epub")
         val EPUB_PUBLICATION_FILE = Regex("[0-9a-f]{64}\\.epubmeta")
+        val BOOK_COVER_FILE = Regex("[0-9a-f]{64}\\.cover")
     }
 }

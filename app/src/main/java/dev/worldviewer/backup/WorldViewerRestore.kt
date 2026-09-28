@@ -315,6 +315,7 @@ class WorldViewerRestore(
                         val document = entry.relativePath.substringAfter('/').substringBefore('.')
                         checkNotNull(EpubPublicationStore(File(staging, "epub-publications")).load(document))
                     }
+                    BackupCategory.BOOK_COVER -> Unit
                 }
             }
             validateMetadataOriginal(staging, appliedPaths)
