@@ -66,6 +66,7 @@
     <string name="table_of_contents_empty">장 제목 형식의 짧은 줄을 찾지 못했습니다.</string>
     <string name="table_of_contents_failed">자동 목차 만들기 실패</string>
     <string name="table_of_contents_manual">수동 목차</string>
+    <string name="table_of_contents_epub">EPUB 목차</string>
     <string name="table_of_contents_add_here">현재 위치 추가</string>
     <string name="table_of_contents_title_hint">목차 제목</string>
     <string name="table_of_contents_default_title">수동 목차 %1$d</string>
@@ -201,6 +202,7 @@
     <string name="annotation_delete_message">이 주석을 삭제할까요? 원문은 바뀌지 않습니다.</string>
     <string name="annotation_failed">주석 작업 실패</string>
     <string name="open_txt">TXT 추가</string>
+    <string name="open_epub">EPUB 추가</string>
     <string name="open_txt_short">TXT</string>
     <string name="open_txt_description">기기에서 중국어 TXT 파일 선택</string>
     <string name="cancel_import">가져오기 취소</string>

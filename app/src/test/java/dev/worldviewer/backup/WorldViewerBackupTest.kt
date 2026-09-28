@@ -1,5 +1,9 @@
 package dev.worldviewer.backup
 
+import dev.worldviewer.reader.EpubChapter
+import dev.worldviewer.reader.EpubPublication
+import dev.worldviewer.reader.EpubPublicationStore
+
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,6 +20,25 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
 class WorldViewerBackupTest {
+    @Test
+    fun `EPUB source is included only with originals and publication metadata is retained`() {
+        val root = temporary.newFolder("epub-backup")
+        val sourceBytes = "epub-source".toByteArray()
+        val sourceHash = java.security.MessageDigest.getInstance("SHA-256").digest(sourceBytes)
+            .joinToString("") { "%02x".format(it) }
+        val documentHash = "d".repeat(64)
+        java.io.File(root, "epub-sources/$sourceHash.epub").apply { parentFile!!.mkdirs(); writeBytes(sourceBytes) }
+        EpubPublicationStore(java.io.File(root, "epub-publications")).save(
+            EpubPublication(documentHash, sourceHash, "$sourceHash.epub", listOf(EpubChapter("第一章", 0))),
+        )
+
+        val without = WorldViewerBackup(root).create(temporary.newFile("without-epub.wvb"), false, 1)
+        val with = WorldViewerBackup(root).create(temporary.newFile("with-epub.wvb"), true, 2)
+
+        assertTrue(without.entries.any { it.category == BackupCategory.EPUB_PUBLICATION })
+        assertTrue(without.entries.none { it.category == BackupCategory.EPUB_SOURCE })
+        assertTrue(with.entries.any { it.category == BackupCategory.EPUB_SOURCE })
+    }
     @get:Rule
     val temporary = TemporaryFolder()
 

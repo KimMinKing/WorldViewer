@@ -26,6 +26,8 @@ enum class BackupCategory {
     MANUAL_CHAPTER,
     USER_MEANING,
     USER_ANNOTATION,
+    EPUB_SOURCE,
+    EPUB_PUBLICATION,
 }
 
 data class BackupEntry(
@@ -178,8 +180,10 @@ class WorldViewerBackup(
             addExact("user-annotations/user-annotations.dat", BackupCategory.USER_ANNOTATION)
             addMatching("reading-positions", POSITION_FILE, BackupCategory.READING_POSITION)
             addMatching("manual-chapters", CHAPTER_FILE, BackupCategory.MANUAL_CHAPTER)
+            addMatching("epub-publications", EPUB_PUBLICATION_FILE, BackupCategory.EPUB_PUBLICATION)
             if (includeOriginalTexts) {
                 addMatching("imports", ORIGINAL_FILE, BackupCategory.ORIGINAL_TEXT)
+                addMatching("epub-sources", EPUB_SOURCE_FILE, BackupCategory.EPUB_SOURCE)
             }
         }.sortedBy(Candidate::relativePath)
         if (candidates.size > MAX_ENTRIES) throw BackupFormatException("백업 항목이 너무 많습니다.")
@@ -265,7 +269,10 @@ class WorldViewerBackup(
         }
         val total = entries.fold(0L) { value, entry -> Math.addExact(value, entry.sizeBytes) }
         if (total > MAX_TOTAL_BYTES) throw BackupFormatException("백업 전체 크기가 허용 범위를 벗어났습니다.")
-        if (!includesOriginals && entries.any { it.category == BackupCategory.ORIGINAL_TEXT }) {
+        if (!includesOriginals && entries.any {
+                it.category == BackupCategory.ORIGINAL_TEXT || it.category == BackupCategory.EPUB_SOURCE
+            }
+        ) {
             throw BackupFormatException("원문 포함 표시와 백업 내용이 일치하지 않습니다.")
         }
         return BackupPreview(version, createdAt, includesOriginals, entries)
@@ -293,6 +300,10 @@ class WorldViewerBackup(
             BackupCategory.READING_POSITION
         path.startsWith("manual-chapters/") && CHAPTER_FILE.matches(path.substringAfter('/')) ->
             BackupCategory.MANUAL_CHAPTER
+        path.startsWith("epub-sources/") && EPUB_SOURCE_FILE.matches(path.substringAfter('/')) ->
+            BackupCategory.EPUB_SOURCE
+        path.startsWith("epub-publications/") && EPUB_PUBLICATION_FILE.matches(path.substringAfter('/')) ->
+            BackupCategory.EPUB_PUBLICATION
         else -> null
     }
 
@@ -361,5 +372,7 @@ class WorldViewerBackup(
         val ORIGINAL_FILE = Regex("[0-9a-f]{64}\\.original")
         val POSITION_FILE = Regex("[0-9a-f]{64}\\.position")
         val CHAPTER_FILE = Regex("[0-9a-f]{64}\\.chapters")
+        val EPUB_SOURCE_FILE = Regex("[0-9a-f]{64}\\.epub")
+        val EPUB_PUBLICATION_FILE = Regex("[0-9a-f]{64}\\.epubmeta")
     }
 }

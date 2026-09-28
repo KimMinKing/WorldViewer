@@ -78,6 +78,10 @@ import dev.worldviewer.reader.BookCatalogStore
 import dev.worldviewer.reader.FolderTxtCandidate
 import dev.worldviewer.reader.FolderTxtScan
 import dev.worldviewer.reader.FolderTxtScanner
+import dev.worldviewer.reader.EpubChapter
+import dev.worldviewer.reader.EpubImporter
+import dev.worldviewer.reader.EpubPublication
+import dev.worldviewer.reader.EpubPublicationStore
 import dev.worldviewer.reader.ImportMetadata
 import dev.worldviewer.reader.ImportMetadataStore
 import dev.worldviewer.reader.ImportCancellation
@@ -669,6 +673,7 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         }
         bookshelfAction(R.string.open_txt, ::openTxtPicker)
+        bookshelfAction(R.string.open_epub, ::openEpubPicker)
         bookshelfAction(R.string.bookshelf_settings, ::showReaderStyle)
         bookshelfAction(R.string.bookshelf_manage) {
             bookshelfSnapshot?.let(::showBookshelfDialog)
@@ -1024,6 +1029,15 @@ class MainActivity : Activity() {
         }
         @Suppress("DEPRECATION")
         startActivityForResult(picker, REQUEST_OPEN_TXT)
+    }
+
+    private fun openEpubPicker() {
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/epub+zip"
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(picker, REQUEST_OPEN_EPUB)
     }
 
     private fun openFolderPicker() {
@@ -1638,19 +1652,24 @@ class MainActivity : Activity() {
     }
 
     private fun showTableOfContentsMenu() {
+        val hasEpub = currentDocumentSha256?.let {
+            runCatching { epubPublicationStore().load(it) != null }.getOrDefault(false)
+        } == true
         val actions = if (currentDocumentSha256 == null) {
             listOf(getString(R.string.table_of_contents_automatic))
         } else {
-            listOf(
-                getString(R.string.table_of_contents_automatic),
-                getString(R.string.table_of_contents_manual),
-                getString(R.string.table_of_contents_add_here),
-            )
+            buildList {
+                if (hasEpub) add(getString(R.string.table_of_contents_epub))
+                add(getString(R.string.table_of_contents_automatic))
+                add(getString(R.string.table_of_contents_manual))
+                add(getString(R.string.table_of_contents_add_here))
+            }
         }
         AlertDialog.Builder(this)
             .setTitle(R.string.table_of_contents)
             .setItems(actions.toTypedArray()) { _, which ->
-                when (which) {
+                when (which - if (hasEpub) 1 else 0) {
+                    -1 -> showEpubTableOfContents()
                     0 -> showAutomaticTableOfContents()
                     1 -> showManualTableOfContents()
                     2 -> addManualChapterHere()
@@ -1658,6 +1677,36 @@ class MainActivity : Activity() {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    private fun showEpubTableOfContents() {
+        val documentId = currentDocumentSha256 ?: return
+        blockExecutor.execute {
+            val result = runCatching { epubPublicationStore().load(documentId)?.chapters.orEmpty() }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.onSuccess { chapters ->
+                    val labels = chapters.map { chapter ->
+                        getString(
+                            R.string.table_of_contents_item,
+                            chapter.title,
+                            ReadingProgress.fromOffset(chapter.utf16Offset, documentUtf16Length) / 10.0,
+                        )
+                    }.toTypedArray()
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.table_of_contents_epub)
+                        .setItems(labels) { _, which -> chapters.getOrNull(which)?.let(::navigateToEpubChapter) }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                }.onFailure(::showManualChapterFailure)
+            }
+        }
+    }
+
+    private fun navigateToEpubChapter(chapter: EpubChapter) {
+        val origin = captureReaderAnchor() ?: return
+        navigateToUtf16(chapter.utf16Offset, origin, reader.paddingTop + 1)
+        Log.i(CHAPTER_TAG, "EPUB navigate utf16=${chapter.utf16Offset}")
     }
 
     private fun showSearchInput() {
@@ -2278,6 +2327,10 @@ class MainActivity : Activity() {
             }
             return
         }
+        if (requestCode == REQUEST_OPEN_EPUB) {
+            if (resultCode == RESULT_OK) data?.data?.let(::importEpub)
+            return
+        }
         if (requestCode != REQUEST_OPEN_TXT || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         val displayName = displayName(uri)
@@ -2310,6 +2363,40 @@ class MainActivity : Activity() {
                     } else {
                         showEncodingPreview(staged, displayName, stageMillis)
                     }
+                }.onFailure(::showImportFailure)
+            }
+        }
+    }
+
+    private fun importEpub(uri: Uri) {
+        val pickedName = displayName(uri)
+        val cancellation = ImportCancellation()
+        beginImportOperation(cancellation, pickedName)
+        blockExecutor.execute {
+            val result = runCatching {
+                cancellation.throwIfCancelled()
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw TxtImportException("선택한 EPUB을 읽을 수 없습니다.")
+                val imported = EpubImporter.import(input, importDirectory(), epubSourceDirectory())
+                cancellation.throwIfCancelled()
+                val displayName = imported.title?.takeIf(String::isNotBlank) ?: pickedName.removeSuffix(".epub")
+                val metadata = ImportMetadata(
+                    imported.text.storedFile.name, displayName, imported.text.sha256,
+                    imported.text.byteCount, imported.text.encoding,
+                )
+                epubPublicationStore().save(EpubPublication(
+                    imported.text.sha256, imported.sourceSha256, imported.sourceFile.name, imported.chapters,
+                ))
+                metadataStore().save(metadata)
+                bookCatalogStore().reconcileCurrent(metadata, System.currentTimeMillis())
+                imported
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                finishImportOperation(cancellation)
+                result.onSuccess {
+                    startActivity(Intent(this, MainActivity::class.java).putExtra(EXTRA_OPEN_READER, true))
+                    finish()
                 }.onFailure(::showImportFailure)
             }
         }
@@ -2652,6 +2739,8 @@ class MainActivity : Activity() {
 
     private fun importDirectory(): File = File(filesDir, "imports")
 
+    private fun epubSourceDirectory(): File = File(filesDir, "epub-sources")
+
     private fun metadataStore(): ImportMetadataStore = ImportMetadataStore(importDirectory())
 
     private fun bookCatalogStore(): BookCatalogStore = BookCatalogStore(File(filesDir, "library"))
@@ -2659,6 +2748,8 @@ class MainActivity : Activity() {
     private fun readerStyleStore(): ReaderStyleStore = ReaderStyleStore(File(filesDir, "reader-styles"))
 
     private fun manualChapterStore(): ManualChapterStore = ManualChapterStore(File(filesDir, "manual-chapters"))
+
+    private fun epubPublicationStore(): EpubPublicationStore = EpubPublicationStore(File(filesDir, "epub-publications"))
 
     private fun userMeaningStore(): UserMeaningStore = UserMeaningStore(File(filesDir, "user-meanings"))
 
@@ -4147,6 +4238,7 @@ class MainActivity : Activity() {
         const val REQUEST_CREATE_BACKUP = 1002
         const val REQUEST_OPEN_BACKUP = 1003
         const val REQUEST_OPEN_FOLDER = 1004
+        const val REQUEST_OPEN_EPUB = 1005
         const val STATE_FIRST_VISIBLE_POSITION = "reader.firstVisiblePosition"
         const val STATE_READER_CHROME_VISIBLE = "reader.chromeVisible"
         const val STATE_BOOKSHELF_VISIBLE = "bookshelf.visible"

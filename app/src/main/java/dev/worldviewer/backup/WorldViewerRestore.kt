@@ -3,6 +3,7 @@ package dev.worldviewer.backup
 import dev.worldviewer.reader.BookCatalogStore
 import dev.worldviewer.reader.ImportMetadataStore
 import dev.worldviewer.reader.ManualChapterStore
+import dev.worldviewer.reader.EpubPublicationStore
 import dev.worldviewer.reader.ReaderStyleStore
 import dev.worldviewer.reader.ReadingPositionStore
 import dev.worldviewer.reader.ReadingTimeStore
@@ -306,6 +307,14 @@ class WorldViewerRestore(
                     }
                     BackupCategory.USER_MEANING -> UserMeaningStore(File(staging, "user-meanings")).load()
                     BackupCategory.USER_ANNOTATION -> UserAnnotationStore(File(staging, "user-annotations")).load()
+                    BackupCategory.EPUB_SOURCE -> {
+                        val expected = entry.relativePath.substringAfter('/').substringBefore('.')
+                        if (entry.sha256 != expected) throw BackupFormatException("EPUB 원본 이름과 체크섬이 일치하지 않습니다.")
+                    }
+                    BackupCategory.EPUB_PUBLICATION -> {
+                        val document = entry.relativePath.substringAfter('/').substringBefore('.')
+                        checkNotNull(EpubPublicationStore(File(staging, "epub-publications")).load(document))
+                    }
                 }
             }
             validateMetadataOriginal(staging, appliedPaths)
