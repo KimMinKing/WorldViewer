@@ -4,6 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.text.TextPaint
+import android.text.TextUtils
+import android.util.TypedValue
 import android.widget.TextView
 import dev.worldviewer.pinyin.PinyinReading
 import dev.worldviewer.selection.SelectionRange
@@ -13,11 +16,14 @@ import dev.worldviewer.selection.SelectionRange
 @SuppressLint("AppCompatCustomView")
 class PinyinTextView(context: Context) : TextView(context) {
     private val rubyPaint = Paint()
+    private val meaningPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
     private var blockStartUtf16 = 0
     private var readings: List<PinyinReading> = emptyList()
     private var displayMode = PinyinDisplayMode.ORIGINAL
     private var completedSelection: SelectionRange? = null
     private var overrides: Map<Int, String> = emptyMap()
+    private var savedMeanings: List<SavedMeaningDisplay> = emptyList()
+    private var showSavedMeanings = false
 
     fun bindRuby(
         blockStartUtf16: Int,
@@ -34,10 +40,19 @@ class PinyinTextView(context: Context) : TextView(context) {
         invalidate()
     }
 
+    fun bindMeanings(blockStartUtf16: Int, meanings: List<SavedMeaningDisplay>, show: Boolean) {
+        this.blockStartUtf16 = blockStartUtf16
+        savedMeanings = meanings
+        showSavedMeanings = show
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (displayMode == PinyinDisplayMode.ORIGINAL) return
         val textLayout = layout ?: return
+
+        if (showSavedMeanings) drawSavedMeanings(canvas, textLayout)
+        if (displayMode == PinyinDisplayMode.ORIGINAL) return
 
         readings.forEach { reading ->
             val globalStart = blockStartUtf16 + reading.startUtf16
@@ -63,6 +78,38 @@ class PinyinTextView(context: Context) : TextView(context) {
                 rubyBaseline,
                 rubyPaint,
             )
+        }
+    }
+
+    private fun drawSavedMeanings(canvas: Canvas, textLayout: android.text.Layout) {
+        meaningPaint.set(paint)
+        meaningPaint.isAntiAlias = true
+        meaningPaint.textSize = maxOf(
+            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 12f, resources.displayMetrics),
+            paint.textSize * 0.60f,
+        )
+        meaningPaint.alpha = 190
+        val gap = paint.textSize * 0.08f
+        val placements = savedMeanings.mapNotNull { saved ->
+            val label = saved.label ?: return@mapNotNull null
+            val start = saved.startUtf16 - blockStartUtf16
+            val end = saved.endUtf16 - blockStartUtf16
+            if (start !in 0 until text.length || end !in 1..text.length || end <= start) return@mapNotNull null
+            val line = textLayout.getLineForOffset(start)
+            if (textLayout.getLineForOffset(end - 1) != line) return@mapNotNull null
+            Triple(line, totalPaddingLeft + textLayout.getPrimaryHorizontal(start), label)
+        }
+        placements.forEachIndexed { index, (line, sourceX, label) ->
+            val next = placements.getOrNull(index + 1)
+            val nextX = next?.second?.takeIf { next.first == line }
+            val rightLimit = minOf(nextX?.minus(gap) ?: Float.MAX_VALUE,
+                totalPaddingLeft + textLayout.width.toFloat())
+            val available = rightLimit - sourceX
+            if (available < meaningPaint.textSize) return@forEachIndexed
+            val visible = TextUtils.ellipsize(label, meaningPaint, available, TextUtils.TruncateAt.END)
+            val sourceBaseline = totalPaddingTop + textLayout.getLineBaseline(line)
+            val meaningBaseline = sourceBaseline + paint.fontMetrics.descent + gap - meaningPaint.fontMetrics.ascent
+            canvas.drawText(visible.toString(), sourceX, meaningBaseline, meaningPaint)
         }
     }
 

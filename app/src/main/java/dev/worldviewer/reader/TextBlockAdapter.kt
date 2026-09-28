@@ -6,6 +6,7 @@ import android.text.SpannableString
 import android.text.Spanned
 import android.text.Layout
 import android.text.style.BackgroundColorSpan
+import android.text.style.LineHeightSpan
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
@@ -26,7 +27,7 @@ class TextBlockAdapter(
 
     private var selection: SelectionRange? = null
     private var highlights: List<SelectionRange> = emptyList()
-    private var savedMeaningRanges: List<SelectionRange> = emptyList()
+    private var savedMeanings: List<SavedMeaningDisplay> = emptyList()
     private var completedPinyinSelection: SelectionRange? = null
     private var pinyinMode = PinyinDisplayMode.ORIGINAL
     private var pinyinByPosition: Map<Int, List<PinyinReading>> = emptyMap()
@@ -77,11 +78,14 @@ class TextBlockAdapter(
             requestBlockAndNeighbors(position)
             return
         }
+        val blockMeanings = savedMeanings.filter {
+            it.startUtf16 < block.endUtf16 && it.endUtf16 > block.startUtf16
+        }
         holder.bind(
             block,
             selection,
             highlights,
-            savedMeaningRanges,
+            blockMeanings,
             completedPinyinSelection,
             pinyinMode,
             pinyinByPosition[position],
@@ -171,9 +175,9 @@ class TextBlockAdapter(
         notifyItemRangeChanged(0, itemCount, SELECTION_PAYLOAD)
     }
 
-    fun setSavedMeaningRanges(ranges: List<SelectionRange>) {
-        if (savedMeaningRanges == ranges) return
-        savedMeaningRanges = ranges
+    fun setSavedMeanings(meanings: List<SavedMeaningDisplay>) {
+        if (savedMeanings == meanings) return
+        savedMeanings = meanings
         notifyItemRangeChanged(0, itemCount, SELECTION_PAYLOAD)
     }
 
@@ -267,6 +271,7 @@ class TextBlockAdapter(
             when (val view = itemView) {
                 is PinyinTextView -> {
                     view.bindRuby(0, null, PinyinDisplayMode.ORIGINAL, null, emptyMap())
+                    view.bindMeanings(0, emptyList(), false)
                     view.text = "본문 불러오는 중…"
                 }
                 is TextView -> view.text = "본문 불러오는 중…"
@@ -278,7 +283,7 @@ class TextBlockAdapter(
             block: TextBlock,
             selection: SelectionRange?,
             highlights: List<SelectionRange>,
-            savedMeaningRanges: List<SelectionRange>,
+            savedMeanings: List<SavedMeaningDisplay>,
             completedPinyinSelection: SelectionRange?,
             pinyinMode: PinyinDisplayMode,
             readings: List<PinyinReading>?,
@@ -287,7 +292,8 @@ class TextBlockAdapter(
         ) {
             when (val view = itemView) {
                 is PinyinTextView -> {
-                    view.text = block.displayText(selection, highlights, savedMeaningRanges, readerStyle)
+                    view.text = block.displayText(selection, highlights, savedMeanings, readerStyle,
+                        view.paint.fontMetricsInt.descent, (view.paint.textSize * 0.9f).toInt())
                     view.bindRuby(
                         blockStartUtf16 = block.startUtf16,
                         readings = readings,
@@ -295,8 +301,9 @@ class TextBlockAdapter(
                         completedSelection = completedPinyinSelection,
                         overrides = overrides,
                     )
+                    view.bindMeanings(block.startUtf16, savedMeanings, readerStyle.showSavedMeaningMarks)
                 }
-                is TextView -> view.text = block.displayText(selection, highlights, savedMeaningRanges, readerStyle)
+                is TextView -> view.text = block.displayText(selection, highlights, savedMeanings, readerStyle, 0, 0)
                 is StaticTextBlockView -> view.bind(block)
             }
         }
@@ -304,17 +311,27 @@ class TextBlockAdapter(
         private fun TextBlock.displayText(
             selection: SelectionRange?,
             highlights: List<SelectionRange>,
-            savedMeaningRanges: List<SelectionRange>,
+            savedMeanings: List<SavedMeaningDisplay>,
             readerStyle: ReaderStyle,
+            baseDescentPx: Int,
+            meaningReservePx: Int,
         ): CharSequence = SpannableString(text).apply {
-            if (readerStyle.showSavedMeaningMarks) savedMeaningRanges.forEach { meaningRange ->
+            if (readerStyle.showSavedMeaningMarks) savedMeanings.forEach { meaningRange ->
                 if (meaningRange.endUtf16 > startUtf16 && meaningRange.startUtf16 < endUtf16) {
+                    val localStart = (meaningRange.startUtf16 - startUtf16).coerceAtLeast(0)
+                    val localEnd = (meaningRange.endUtf16 - startUtf16).coerceAtMost(text.length)
                     setSpan(
                         BackgroundColorSpan(readerStyle.savedMeaningColor()),
-                        (meaningRange.startUtf16 - startUtf16).coerceAtLeast(0),
-                        (meaningRange.endUtf16 - startUtf16).coerceAtMost(text.length),
+                        localStart,
+                        localEnd,
                         Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
                     )
+                    if (meaningRange.label != null && meaningReservePx > 0 &&
+                        meaningRange.startUtf16 >= startUtf16 && meaningRange.endUtf16 <= endUtf16
+                    ) {
+                        setSpan(MeaningLineHeightSpan(baseDescentPx, meaningReservePx), localStart, localEnd,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    }
                 }
             }
             highlights.forEach { highlight ->
@@ -337,6 +354,20 @@ class TextBlockAdapter(
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
                 )
             }
+        }
+    }
+
+    private class MeaningLineHeightSpan(
+        private val baseDescentPx: Int,
+        private val reservePx: Int,
+    ) : LineHeightSpan {
+        override fun chooseHeight(
+            text: CharSequence, start: Int, end: Int, spanstartv: Int, v: Int,
+            fm: android.graphics.Paint.FontMetricsInt,
+        ) {
+            // Max avoids stacking extra height when several saved words share a visual line.
+            fm.descent = maxOf(fm.descent, baseDescentPx + reservePx)
+            fm.bottom = maxOf(fm.bottom, fm.descent)
         }
     }
 

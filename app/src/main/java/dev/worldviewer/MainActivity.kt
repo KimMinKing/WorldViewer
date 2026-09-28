@@ -132,6 +132,7 @@ import dev.worldviewer.reader.UserMeaningStore
 import dev.worldviewer.reader.UserMeaning
 import dev.worldviewer.reader.UserMeaningIndex
 import dev.worldviewer.reader.sameMeaningAndTarget
+import dev.worldviewer.reader.savedMeaningDisplays
 import dev.worldviewer.reader.UserAnnotationStore
 import dev.worldviewer.reader.UserAnnotation
 import dev.worldviewer.pinyin.PinyinBlockCoordinator
@@ -3237,7 +3238,7 @@ class MainActivity : Activity() {
         val documentId = currentDocumentSha256
         if (documentId == null) {
             textBlockAdapter?.setHighlights(emptyList())
-            textBlockAdapter?.setSavedMeaningRanges(emptyList())
+            textBlockAdapter?.setSavedMeanings(emptyList())
             return
         }
         blockExecutor.execute {
@@ -3247,17 +3248,15 @@ class MainActivity : Activity() {
                 }.map { SelectionRange(it.startUtf16, it.endUtf16) }
             }
             val meaningResult = runCatching {
-                userMeaningStore().load().asSequence()
-                    .filter { it.scope == MeaningScope.RANGE && it.documentSha256 == documentId }
-                    .map { SelectionRange(requireNotNull(it.rangeStartUtf16), requireNotNull(it.rangeEndUtf16)) }
-                    .distinct()
-                    .toList()
+                savedMeaningDisplays(userMeaningStore().load().filter {
+                    it.scope == MeaningScope.RANGE && it.documentSha256 == documentId
+                })
             }
             runOnUiThread {
                 if (!isDestroyed && currentDocumentSha256 == documentId) {
                     highlightResult.onSuccess { ranges -> textBlockAdapter?.setHighlights(ranges) }
                         .onFailure(::showAnnotationFailure)
-                    meaningResult.onSuccess { ranges -> textBlockAdapter?.setSavedMeaningRanges(ranges) }
+                    meaningResult.onSuccess { values -> textBlockAdapter?.setSavedMeanings(values) }
                         .onFailure(::showMeaningFailure)
                 }
             }
