@@ -39,6 +39,7 @@ import android.window.OnBackInvokedDispatcher
 import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.ArrayAdapter
 import android.widget.AdapterView
 import android.widget.EditText
@@ -130,6 +131,7 @@ import dev.worldviewer.reader.TxtImportException
 import dev.worldviewer.reader.UserMeaningStore
 import dev.worldviewer.reader.UserMeaning
 import dev.worldviewer.reader.UserMeaningIndex
+import dev.worldviewer.reader.sameMeaningAndTarget
 import dev.worldviewer.reader.UserAnnotationStore
 import dev.worldviewer.reader.UserAnnotation
 import dev.worldviewer.pinyin.PinyinBlockCoordinator
@@ -2237,6 +2239,9 @@ class MainActivity : Activity() {
         val backgroundColors = listOf<Int?>(null) + ReaderStyleColors.BACKGROUND
         val textColorSpinner = Spinner(this)
         val backgroundColorSpinner = Spinner(this)
+        val savedMeaningMarks = CheckBox(this).apply {
+            text = getString(R.string.reader_style_saved_meaning_marks)
+        }
         val colorNames = resources.getStringArray(R.array.reader_style_color_names).toList()
         val backgroundNames = resources.getStringArray(R.array.reader_style_background_names).toList()
         textColorSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, colorNames)
@@ -2245,6 +2250,7 @@ class MainActivity : Activity() {
         content.addView(textColorSpinner)
         content.addView(TextView(this).apply { text = getString(R.string.reader_style_background_color) })
         content.addView(backgroundColorSpinner)
+        content.addView(savedMeaningMarks)
         val preview = TextView(this).apply {
             text = getString(R.string.reader_style_preview_sample)
             setPadding(12.dp, 12.dp, 12.dp, 12.dp)
@@ -2261,6 +2267,7 @@ class MainActivity : Activity() {
             theme = if (themeGroup.checkedRadioButtonId == darkTheme.id) ReaderTheme.DARK else ReaderTheme.LIGHT,
             textColorArgb = textColors[textColorSpinner.selectedItemPosition.coerceAtLeast(0)],
             backgroundColorArgb = backgroundColors[backgroundColorSpinner.selectedItemPosition.coerceAtLeast(0)],
+            showSavedMeaningMarks = savedMeaningMarks.isChecked,
         )
         fun updatePreview() {
             val style = selectedStyle()
@@ -2283,6 +2290,7 @@ class MainActivity : Activity() {
             themeGroup.check(if (style.theme == ReaderTheme.DARK) darkTheme.id else lightTheme.id)
             textColorSpinner.setSelection(textColors.indexOf(style.textColorArgb).coerceAtLeast(0))
             backgroundColorSpinner.setSelection(backgroundColors.indexOf(style.backgroundColorArgb).coerceAtLeast(0))
+            savedMeaningMarks.isChecked = style.showSavedMeaningMarks
             updateLabels()
         }
         val colorListener = object : AdapterView.OnItemSelectedListener {
@@ -3229,18 +3237,28 @@ class MainActivity : Activity() {
         val documentId = currentDocumentSha256
         if (documentId == null) {
             textBlockAdapter?.setHighlights(emptyList())
+            textBlockAdapter?.setSavedMeaningRanges(emptyList())
             return
         }
         blockExecutor.execute {
-            val result = runCatching {
+            val highlightResult = runCatching {
                 userAnnotationStore().load().filter {
                     it.documentSha256 == documentId && it.type == AnnotationType.HIGHLIGHT
                 }.map { SelectionRange(it.startUtf16, it.endUtf16) }
             }
+            val meaningResult = runCatching {
+                userMeaningStore().load().asSequence()
+                    .filter { it.scope == MeaningScope.RANGE && it.documentSha256 == documentId }
+                    .map { SelectionRange(requireNotNull(it.rangeStartUtf16), requireNotNull(it.rangeEndUtf16)) }
+                    .distinct()
+                    .toList()
+            }
             runOnUiThread {
                 if (!isDestroyed && currentDocumentSha256 == documentId) {
-                    result.onSuccess { ranges -> textBlockAdapter?.setHighlights(ranges) }
+                    highlightResult.onSuccess { ranges -> textBlockAdapter?.setHighlights(ranges) }
                         .onFailure(::showAnnotationFailure)
+                    meaningResult.onSuccess { ranges -> textBlockAdapter?.setSavedMeaningRanges(ranges) }
+                        .onFailure(::showMeaningFailure)
                 }
             }
         }
@@ -3712,7 +3730,9 @@ class MainActivity : Activity() {
                     createdAtEpochMillis = now,
                     updatedAtEpochMillis = now,
                 )
-                updateUserMeanings({ it + value }) {
+                updateUserMeanings({ saved ->
+                    if (saved.any { it.sameMeaningAndTarget(value) }) saved else saved + value
+                }) {
                     if (selectionRequestGate.isCurrent(target.selectionVersion)) {
                         selectionGestureController?.cancelSelection()
                     }
@@ -3826,6 +3846,7 @@ class MainActivity : Activity() {
                 if (isDestroyed) return@runOnUiThread
                 result.onSuccess {
                     Toast.makeText(this, R.string.meaning_saved, Toast.LENGTH_SHORT).show()
+                    refreshHighlights()
                     onSuccess()
                 }.onFailure(::showMeaningFailure)
             }

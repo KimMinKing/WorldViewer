@@ -22,6 +22,7 @@ data class ReaderStyle(
     val theme: ReaderTheme = ReaderTheme.LIGHT,
     val textColorArgb: Int? = null,
     val backgroundColorArgb: Int? = null,
+    val showSavedMeaningMarks: Boolean = true,
 ) {
     companion object {
         const val DEFAULT_FONT_SIZE_SP = 19
@@ -174,6 +175,7 @@ class ReaderStyleStore(private val directory: File) {
         },
         textColorArgb = if (version >= 2) readInt().takeUnless { it == 0 } else null,
         backgroundColorArgb = if (version >= 2) readInt().takeUnless { it == 0 } else null,
+        showSavedMeaningMarks = if (version >= 3) readBoolean() else true,
     )
 
     private fun DataOutputStream.writeStyle(style: ReaderStyle) {
@@ -182,6 +184,7 @@ class ReaderStyleStore(private val directory: File) {
         writeUTF(style.theme.name)
         writeInt(style.textColorArgb ?: 0)
         writeInt(style.backgroundColorArgb ?: 0)
+        writeBoolean(style.showSavedMeaningMarks)
     }
 
     private fun validate(preferences: ReaderStylePreferences) {
@@ -209,7 +212,7 @@ class ReaderStyleStore(private val directory: File) {
     companion object {
         const val FILE_NAME = "reader-styles.bin"
         private const val MAGIC = 0x57565354
-        private const val VERSION = 2
+        private const val VERSION = 3
         private const val MAX_BOOKS = 10_000
         private val SHA256 = Regex("[0-9a-f]{64}")
     }

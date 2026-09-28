@@ -29,7 +29,8 @@ class ReaderStyleStoreTest {
         val store = ReaderStyleStore(directory)
         val defaultStyle = ReaderStyle(18, 125, ReaderTheme.DARK)
         val bookStyle = ReaderStyle(24, 150, ReaderTheme.LIGHT,
-            textColorArgb = 0xFFFFFFFF.toInt(), backgroundColorArgb = 0xFF102838.toInt())
+            textColorArgb = 0xFFFFFFFF.toInt(), backgroundColorArgb = 0xFF102838.toInt(),
+            showSavedMeaningMarks = false)
         val preferences = ReaderStylePreferences(defaultStyle, mapOf(bookA to bookStyle))
 
         store.save(preferences)
@@ -66,7 +67,7 @@ class ReaderStyleStoreTest {
         store.save(requireNotNull(legacy))
         DataInputStream(file.inputStream()).use { input ->
             assertEquals(0x57565354, input.readInt())
-            assertEquals(2, input.readInt())
+            assertEquals(3, input.readInt())
         }
         assertEquals(legacy, store.load())
     }

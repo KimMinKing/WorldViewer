@@ -36,6 +36,11 @@ data class MeaningQuery(
     val rangeEndUtf16: Int?,
 )
 
+fun UserMeaning.sameMeaningAndTarget(other: UserMeaning): Boolean =
+    sourceText == other.sourceText && meaning == other.meaning && scope == other.scope &&
+        documentSha256 == other.documentSha256 && rangeStartUtf16 == other.rangeStartUtf16 &&
+        rangeEndUtf16 == other.rangeEndUtf16
+
 class UserMeaningIndex(meanings: List<UserMeaning>) {
     private data class BookKey(val source: String, val document: String)
     private data class RangeKey(val source: String, val document: String, val start: Int, val end: Int)

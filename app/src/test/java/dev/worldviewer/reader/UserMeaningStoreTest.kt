@@ -10,6 +10,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UserMeaningStoreTest {
+    @Test
+    fun `duplicate identity includes selection range so word and sentence records stay separate`() {
+        val word = meaning(1, "단어", MeaningScope.RANGE, bookA, 10, 12)
+        val duplicate = word.copy(id = "00000000-0000-0000-0000-000000000099")
+        val sentence = word.copy(id = "00000000-0000-0000-0000-000000000098", rangeEndUtf16 = 20)
+
+        assertTrue(word.sameMeaningAndTarget(duplicate))
+        assertFalse(word.sameMeaningAndTarget(sentence))
+    }
+
     private val bookA = "a".repeat(64)
     private val bookB = "b".repeat(64)
 

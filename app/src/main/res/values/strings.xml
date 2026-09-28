@@ -51,6 +51,7 @@
     <string name="reader_style_use_default">기본값 복원</string>
     <string name="reader_style_text_color">글자색</string>
     <string name="reader_style_background_color">배경색</string>
+    <string name="reader_style_saved_meaning_marks">저장한 뜻의 원문을 은은하게 표시</string>
     <string name="reader_style_preview_sample">江湖夜雨十年灯。\n강호의 밤비 · jiāng hú</string>
     <string name="reader_style_contrast_warning">글자와 배경의 대비가 부족합니다. 다른 색을 골라 주세요.</string>
     <string-array name="reader_style_color_names">

@@ -26,6 +26,7 @@ class TextBlockAdapter(
 
     private var selection: SelectionRange? = null
     private var highlights: List<SelectionRange> = emptyList()
+    private var savedMeaningRanges: List<SelectionRange> = emptyList()
     private var completedPinyinSelection: SelectionRange? = null
     private var pinyinMode = PinyinDisplayMode.ORIGINAL
     private var pinyinByPosition: Map<Int, List<PinyinReading>> = emptyMap()
@@ -80,6 +81,7 @@ class TextBlockAdapter(
             block,
             selection,
             highlights,
+            savedMeaningRanges,
             completedPinyinSelection,
             pinyinMode,
             pinyinByPosition[position],
@@ -166,6 +168,12 @@ class TextBlockAdapter(
     fun setHighlights(ranges: List<SelectionRange>) {
         if (highlights == ranges) return
         highlights = ranges
+        notifyItemRangeChanged(0, itemCount, SELECTION_PAYLOAD)
+    }
+
+    fun setSavedMeaningRanges(ranges: List<SelectionRange>) {
+        if (savedMeaningRanges == ranges) return
+        savedMeaningRanges = ranges
         notifyItemRangeChanged(0, itemCount, SELECTION_PAYLOAD)
     }
 
@@ -270,6 +278,7 @@ class TextBlockAdapter(
             block: TextBlock,
             selection: SelectionRange?,
             highlights: List<SelectionRange>,
+            savedMeaningRanges: List<SelectionRange>,
             completedPinyinSelection: SelectionRange?,
             pinyinMode: PinyinDisplayMode,
             readings: List<PinyinReading>?,
@@ -278,7 +287,7 @@ class TextBlockAdapter(
         ) {
             when (val view = itemView) {
                 is PinyinTextView -> {
-                    view.text = block.displayText(selection, highlights, readerStyle)
+                    view.text = block.displayText(selection, highlights, savedMeaningRanges, readerStyle)
                     view.bindRuby(
                         blockStartUtf16 = block.startUtf16,
                         readings = readings,
@@ -287,7 +296,7 @@ class TextBlockAdapter(
                         overrides = overrides,
                     )
                 }
-                is TextView -> view.text = block.displayText(selection, highlights, readerStyle)
+                is TextView -> view.text = block.displayText(selection, highlights, savedMeaningRanges, readerStyle)
                 is StaticTextBlockView -> view.bind(block)
             }
         }
@@ -295,8 +304,19 @@ class TextBlockAdapter(
         private fun TextBlock.displayText(
             selection: SelectionRange?,
             highlights: List<SelectionRange>,
+            savedMeaningRanges: List<SelectionRange>,
             readerStyle: ReaderStyle,
         ): CharSequence = SpannableString(text).apply {
+            if (readerStyle.showSavedMeaningMarks) savedMeaningRanges.forEach { meaningRange ->
+                if (meaningRange.endUtf16 > startUtf16 && meaningRange.startUtf16 < endUtf16) {
+                    setSpan(
+                        BackgroundColorSpan(readerStyle.savedMeaningColor()),
+                        (meaningRange.startUtf16 - startUtf16).coerceAtLeast(0),
+                        (meaningRange.endUtf16 - startUtf16).coerceAtMost(text.length),
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+            }
             highlights.forEach { highlight ->
                 if (highlight.endUtf16 > startUtf16 && highlight.startUtf16 < endUtf16) {
                     setSpan(
@@ -345,6 +365,11 @@ internal fun ReaderStyle.selectionColor(): Int = readableHighlight(when (theme) 
 internal fun ReaderStyle.highlightColor(): Int = readableHighlight(when (theme) {
     ReaderTheme.LIGHT -> Color.rgb(255, 235, 120)
     ReaderTheme.DARK -> Color.rgb(112, 91, 28)
+})
+
+internal fun ReaderStyle.savedMeaningColor(): Int = readableHighlight(when (theme) {
+    ReaderTheme.LIGHT -> Color.rgb(220, 238, 232)
+    ReaderTheme.DARK -> Color.rgb(42, 72, 65)
 })
 
 private fun ReaderStyle.readableHighlight(preferred: Int): Int {
