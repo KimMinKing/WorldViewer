@@ -11,11 +11,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.Rect
 import android.graphics.BitmapFactory
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
+import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -25,13 +27,16 @@ import android.os.storage.StorageManager
 import android.provider.OpenableColumns
 import android.text.SpannableString
 import android.text.Spanned
+import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
 import android.util.Log
 import android.view.Gravity
 import android.view.GestureDetector
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.window.OnBackInvokedCallback
@@ -69,16 +74,21 @@ import dev.worldviewer.lookup.LegacyDictionaryCleanup
 import dev.worldviewer.lookup.AzureTranslationProvider
 import dev.worldviewer.lookup.AzureTranslatorCredentialStore
 import dev.worldviewer.lookup.AzureTranslatorCredentials
+import dev.worldviewer.lookup.AzureUsageStore
+import dev.worldviewer.lookup.DeepSeekChapterTranslator
 import dev.worldviewer.lookup.MyMemoryTranslationProvider
 import dev.worldviewer.lookup.savableMeanings
 import dev.worldviewer.reader.AutoBookCover
 import dev.worldviewer.reader.AnnotationType
 import dev.worldviewer.reader.AutomaticChapter
 import dev.worldviewer.reader.AutomaticChapterDetector
+import dev.worldviewer.reader.ChapterTranslationRangeSelector
 import dev.worldviewer.reader.BlockRenderer
 import dev.worldviewer.reader.BookCatalog
 import dev.worldviewer.reader.BookCatalogEntry
 import dev.worldviewer.reader.BookCatalogStore
+import dev.worldviewer.reader.BookshelfList
+import dev.worldviewer.reader.BookshelfSort
 import dev.worldviewer.reader.FolderTxtCandidate
 import dev.worldviewer.reader.FolderTxtScan
 import dev.worldviewer.reader.FolderTxtScanner
@@ -107,6 +117,7 @@ import dev.worldviewer.reader.ReadingTimeLedger
 import dev.worldviewer.reader.ReadingTimeStore
 import dev.worldviewer.reader.ReadingProgress
 import dev.worldviewer.reader.ReaderStyle
+import dev.worldviewer.reader.ReaderFontStore
 import dev.worldviewer.reader.ReaderTapAction
 import dev.worldviewer.reader.ReaderTapZones
 import dev.worldviewer.reader.ReaderStyleColors
@@ -163,6 +174,9 @@ class MainActivity : Activity() {
     private val positionExecutor = Executors.newSingleThreadExecutor()
     private val backupExecutor = Executors.newSingleThreadExecutor()
     private val dictionaryExecutor = Executors.newSingleThreadExecutor()
+    @Volatile private var chapterTranslationGeneration = 0
+    private var chapterTranslationDialog: AlertDialog? = null
+    private var activeChapterTranslator: DeepSeekChapterTranslator? = null
     private val readingTimeHandler = Handler(Looper.getMainLooper())
     private var readingTimeLedger: ReadingTimeLedger? = null
     private var readingTimeLoadError: Throwable? = null
@@ -172,6 +186,7 @@ class MainActivity : Activity() {
     private var readingTimeScreenOn = true
     private var readingTimeActiveBook: String? = null
     private var screenReceiverRegistered = false
+    private var batteryReceiverRegistered = false
     private val readingTimeTick = object : Runnable {
         override fun run() {
             if (readingTimeActiveBook == null) return
@@ -190,12 +205,24 @@ class MainActivity : Activity() {
             }
         }
     }
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != Intent.ACTION_BATTERY_CHANGED) return
+            val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+            batteryPercent = if (scale > 0 && level in 0..scale) level * 100 / scale else null
+            updateReaderFooter()
+        }
+    }
     private lateinit var rootLayout: FrameLayout
     private lateinit var bookshelfHome: LinearLayout
     private lateinit var bookshelfItems: ListView
+    private lateinit var bookshelfSearch: EditText
+    private lateinit var bookshelfSort: Spinner
     private lateinit var bookshelfEmptyView: TextView
     private lateinit var bookshelfStatusView: TextView
     private var bookshelfSnapshot: BookshelfSnapshot? = null
+    private var visibleBookshelfBooks: List<BookCatalogEntry> = emptyList()
     private var readerBackCallback: OnBackInvokedCallback? = null
     private lateinit var readerChrome: LinearLayout
     private lateinit var selectionControls: LinearLayout
@@ -210,13 +237,18 @@ class MainActivity : Activity() {
     private lateinit var openTxtButton: Button
     private lateinit var cancelImportButton: Button
     private lateinit var readingProgressView: TextView
+    private lateinit var readerFooter: TextView
     private lateinit var readingProgressSeekBar: SeekBar
+    private var readerFooterProgress = 0
+    private var batteryPercent: Int? = null
     private lateinit var previousLocationButton: Button
     private var textBlockAdapter: TextBlockAdapter? = null
     private var pinyinCoordinator: PinyinBlockCoordinator? = null
     private var selectionGestureController: SelectionGestureController? = null
     private var pinyinMode = PinyinDisplayMode.ORIGINAL
     private var anchorRestoreGeneration = 0L
+    private var retainedReaderAnchor: ReaderAnchor? = null
+    private val pagePositionSave = Runnable { persistReadingPosition() }
     private var pendingPinyinReadings: Map<Int, List<dev.worldviewer.pinyin.PinyinReading>>? = null
     private var pendingImport: StagedTextImport? = null
     private var activeImportCancellation: ImportCancellation? = null
@@ -224,6 +256,9 @@ class MainActivity : Activity() {
     private var folderOperationDialog: AlertDialog? = null
     private var currentDocumentSha256: String? = null
     private var currentReaderStyle = ReaderStyle.DEFAULT
+    private var volumeKeysTurnPages = false
+    private var animatePageTurns = false
+    private var currentReaderTypeface: Typeface? = null
     private var documentUtf16Length = 0
     private var trackingReadingProgress = false
     private var navigationInFlight = false
@@ -251,6 +286,11 @@ class MainActivity : Activity() {
         }
 
         override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+            if (newState != RecyclerView.SCROLL_STATE_IDLE) {
+                // A real drag or animated page move establishes a new visible position.
+                retainedReaderAnchor = null
+                anchorRestoreGeneration++
+            }
             if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
                 setReaderChromeVisible(false)
             }
@@ -279,6 +319,8 @@ class MainActivity : Activity() {
         }
 
         val horizontalPadding = 20.dp
+        val compactControls = resources.configuration.screenWidthDp < 600 ||
+            resources.configuration.fontScale >= 1.5f
         rootLayout = FrameLayout(this).apply {
             setBackgroundColor(Color.rgb(250, 248, 243))
         }
@@ -422,6 +464,10 @@ class MainActivity : Activity() {
                 override fun onDown(event: android.view.MotionEvent): Boolean = true
 
                 override fun onSingleTapUp(event: android.view.MotionEvent): Boolean {
+                    if (readerChromeVisible) {
+                        setReaderChromeVisible(false, animate = true)
+                        return true
+                    }
                     return when (ReaderTapZones.action(event.y, reader.height)) {
                         ReaderTapAction.PREVIOUS_PAGE -> pageReader(-1)
                         ReaderTapAction.TOGGLE_CONTROLS -> reader.performClick()
@@ -501,14 +547,13 @@ class MainActivity : Activity() {
             }
         }
         val pinyinControls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = if (compactControls) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
         }
-        pinyinControls.addView(Button(this).apply {
+        val pinyinButton = Button(this).apply {
             text = getString(R.string.reader_pinyin_menu)
             textSize = 12f
             setOnClickListener { showPinyinMenu() }
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        pinyinControls.addView(tableOfContentsButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
         searchButton = Button(this).apply {
             text = getString(R.string.search)
             textSize = 12f
@@ -518,20 +563,26 @@ class MainActivity : Activity() {
                 if (activeSearchCancellation != null) cancelActiveSearch() else showSearchInput()
             }
         }
-        pinyinControls.addView(
-            searchButton,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        pinyinControls.addView(styleButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        pinyinControls.addView(
-            Button(this).apply {
-                text = getString(R.string.reader_tools)
-                textSize = 12f
-                contentDescription = getString(R.string.reader_tools_description)
-                setOnClickListener { showReaderTools() }
-            },
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
+        val toolsButton = Button(this).apply {
+            text = getString(R.string.reader_tools)
+            textSize = 12f
+            contentDescription = getString(R.string.reader_tools_description)
+            setOnClickListener { showReaderTools() }
+        }
+        val menuButtons = listOf(pinyinButton, tableOfContentsButton, searchButton, styleButton, toolsButton)
+        if (compactControls) {
+            menuButtons.chunked(3).forEach { buttons ->
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                buttons.forEach { button ->
+                    row.addView(button, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                }
+                pinyinControls.addView(row, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+        } else {
+            menuButtons.forEach { button ->
+                pinyinControls.addView(button, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
         readerChrome.addView(pinyinControls, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         val navigationControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -586,25 +637,41 @@ class MainActivity : Activity() {
                 navigateToUtf16(target.globalUtf16, origin, target.screenY)
             }
         }
-        navigationControls.addView(
-            readingProgressView,
-            LinearLayout.LayoutParams(92.dp, LinearLayout.LayoutParams.WRAP_CONTENT),
-        )
-        navigationControls.addView(
-            readingProgressSeekBar,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
-        navigationControls.addView(
-            previousLocationButton,
-            LinearLayout.LayoutParams(132.dp, LinearLayout.LayoutParams.WRAP_CONTENT),
-        )
+        if (compactControls) {
+            navigationControls.orientation = LinearLayout.VERTICAL
+            val positionRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            positionRow.addView(readingProgressView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            positionRow.addView(previousLocationButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            navigationControls.addView(positionRow, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            navigationControls.addView(readingProgressSeekBar, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        } else {
+            navigationControls.addView(readingProgressView, LinearLayout.LayoutParams(92.dp, LinearLayout.LayoutParams.WRAP_CONTENT))
+            navigationControls.addView(readingProgressSeekBar, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            navigationControls.addView(previousLocationButton, LinearLayout.LayoutParams(132.dp, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
         readerChrome.addView(
             navigationControls,
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         )
+        readerFooter = TextView(this).apply {
+            textSize = 11f
+            gravity = Gravity.CENTER
+            minHeight = 18.dp
+            setPadding(8.dp, 0, 8.dp, 0)
+            isClickable = false
+        }
+        updateReaderFooter()
+        val readerBody = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(reader, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(readerFooter, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+        }
         root.addView(
-            reader,
+            readerBody,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -615,8 +682,8 @@ class MainActivity : Activity() {
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP,
-            ),
+                Gravity.BOTTOM,
+            ).apply { bottomMargin = 18.dp },
         )
         root.addView(
             selectionControls,
@@ -642,13 +709,26 @@ class MainActivity : Activity() {
             setTextColor(Color.rgb(35, 33, 29))
             setPadding(0, 0, 0, 12.dp)
         })
-        val bookshelfActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val bookshelfActions = LinearLayout(this).apply {
+            orientation = if (compactControls) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        }
+        var bookshelfActionCount = 0
         fun bookshelfAction(label: Int, action: () -> Unit) {
-            bookshelfActions.addView(Button(this).apply {
+            val button = Button(this).apply {
                 text = getString(label)
                 textSize = 12f
                 setOnClickListener { action() }
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+            val row = if (compactControls) {
+                if (bookshelfActionCount % 2 == 0) {
+                    bookshelfActions.addView(LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL })
+                }
+                bookshelfActions.getChildAt(bookshelfActionCount / 2) as LinearLayout
+            } else {
+                bookshelfActions
+            }
+            row.addView(button, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            bookshelfActionCount++
         }
         bookshelfAction(R.string.open_txt, ::openTxtPicker)
         bookshelfAction(R.string.open_epub, ::openEpubPicker)
@@ -658,13 +738,48 @@ class MainActivity : Activity() {
         }
         bookshelfHome.addView(bookshelfActions)
         bookshelfHome.addView(Button(this).apply {
-            text = getString(R.string.reading_time)
-            setOnClickListener { showReadingTime() }
+            text = getString(R.string.bookshelf_more)
+            setOnClickListener {
+                val labels = arrayOf(
+                    getString(R.string.bookshelf_add_folder),
+                    getString(R.string.reading_time),
+                    getString(R.string.azure_usage_title),
+                )
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(R.string.bookshelf_more)
+                    .setItems(labels) { _, which ->
+                        when (which) {
+                            0 -> openFolderPicker()
+                            1 -> showReadingTime()
+                            2 -> showAzureUsage()
+                        }
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            }
         })
-        bookshelfHome.addView(Button(this).apply {
-            text = getString(R.string.bookshelf_add_folder)
-            setOnClickListener { openFolderPicker() }
-        })
+        val bookshelfFindRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        bookshelfSearch = EditText(this).apply {
+            hint = getString(R.string.bookshelf_search_hint)
+            contentDescription = getString(R.string.bookshelf_search_hint)
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            setText((savedInstanceState?.getString(STATE_BOOKSHELF_QUERY)
+                ?: intent.getStringExtra(STATE_BOOKSHELF_QUERY)).orEmpty())
+        }
+        bookshelfFindRow.addView(bookshelfSearch, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        bookshelfSort = Spinner(this).apply {
+            contentDescription = getString(R.string.bookshelf_sort_description)
+            adapter = ArrayAdapter.createFromResource(
+                this@MainActivity,
+                R.array.bookshelf_sort_options,
+                android.R.layout.simple_spinner_dropdown_item,
+            )
+            setSelection((savedInstanceState?.getInt(STATE_BOOKSHELF_SORT)
+                ?: intent.getIntExtra(STATE_BOOKSHELF_SORT, 0)).coerceIn(0, 1))
+        }
+        bookshelfFindRow.addView(bookshelfSort, LinearLayout.LayoutParams(132.dp, LinearLayout.LayoutParams.WRAP_CONTENT))
+        bookshelfHome.addView(bookshelfFindRow)
         bookshelfStatusView = TextView(this).apply {
             text = getString(R.string.bookshelf_loading)
             setPadding(0, 12.dp, 0, 12.dp)
@@ -679,23 +794,36 @@ class MainActivity : Activity() {
         bookshelfHome.addView(bookshelfEmptyView)
         bookshelfItems = ListView(this).apply {
             setOnItemClickListener { _, _, position, _ ->
-                val book = bookshelfSnapshot?.catalog?.books?.getOrNull(position) ?: return@setOnItemClickListener
+                val book = visibleBookshelfBooks.getOrNull(position) ?: return@setOnItemClickListener
                 if (book.bookId == currentDocumentSha256) openReaderFromBookshelf()
                 else openCatalogBook(book)
             }
             setOnItemLongClickListener { _, _, position, _ ->
-                bookshelfSnapshot?.catalog?.books?.getOrNull(position)?.let(::showBookEditMenu)
+                visibleBookshelfBooks.getOrNull(position)?.let(::showBookEditMenu)
                 true
             }
         }
         bookshelfHome.addView(bookshelfItems, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f,
         ))
+        bookshelfSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderBookshelfItems()
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+        bookshelfSort.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) =
+                renderBookshelfItems()
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
         root.addView(bookshelfHome, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT,
         ))
-        if (startOnBookshelf) reader.visibility = View.INVISIBLE
+        if (startOnBookshelf) {
+            reader.visibility = View.INVISIBLE
+            readerFooter.visibility = View.GONE
+        }
         root.setOnApplyWindowInsetsListener { view, insets ->
             val bars = insets.systemBarInsets()
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
@@ -714,6 +842,13 @@ class MainActivity : Activity() {
             registerReceiver(screenReceiver, screenFilter)
         }
         screenReceiverRegistered = true
+        val batteryFilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(batteryReceiver, batteryFilter, Context.RECEIVER_NOT_EXPORTED)
+        else {
+            @Suppress("DEPRECATION")
+            registerReceiver(batteryReceiver, batteryFilter)
+        }
+        batteryReceiverRegistered = true
         backupExecutor.execute {
             val result = runCatching {
                 readingTimeStore().cleanStalePartials()
@@ -784,8 +919,11 @@ class MainActivity : Activity() {
                                 position.utf16Offset.coerceAtMost(summary.utf16Length - 1),
                             )
                         }
+                    val restoredAnchorPosition = restoredAnchor
+                        ?.takeIf { summary.blockCount > 0 && it.globalUtf16 in 0 until summary.utf16Length }
+                        ?.let { anchor -> indexReader.positionForUtf16(anchor.globalUtf16) }
                     val initialPosition = when {
-                        restoredAnchor != null -> restoredAnchor.position
+                        restoredAnchorPosition != null -> restoredAnchorPosition
                         savedBlockPosition != null -> savedBlockPosition
                         else -> restoredPosition
                     }.coerceIn(0, maxOf(0, summary.blockCount - 1))
@@ -812,6 +950,7 @@ class MainActivity : Activity() {
                         initialBlocks = initialBlocks,
                         utf16Length = summary.utf16Length,
                         savedPosition = resolvedSavedPosition,
+                        restoredAnchorPosition = restoredAnchorPosition,
                     )
                 } catch (error: Exception) {
                     indexReader.close()
@@ -820,11 +959,14 @@ class MainActivity : Activity() {
             }
             val recent = recentResult.getOrNull()
             val metadata = recent?.metadata
-            val resolvedStyle = runCatching {
-                (readerStyleStore().load() ?: ReaderStylePreferences()).resolved(metadata?.sha256)
+            val stylePreferences = runCatching {
+                readerStyleStore().load() ?: ReaderStylePreferences()
             }.onFailure { error ->
                 Log.e(STYLE_TAG, "saved reader style ignored", error)
-            }.getOrDefault(ReaderStyle.DEFAULT)
+            }.getOrDefault(ReaderStylePreferences())
+            val resolvedStyle = stylePreferences.resolved(metadata?.sha256)
+            val resolvedTypeface = runCatching { readerFontStore().load() }
+                .onFailure { Log.e(STYLE_TAG, "saved reading font ignored", it) }.getOrNull()
             val sourceText = ReaderFixture.text
             val documentName = metadata?.displayName ?: getString(R.string.fixture_name)
             val blockSource: TextBlockSource = if (recent != null) {
@@ -842,8 +984,12 @@ class MainActivity : Activity() {
                     return@runOnUiThread
                 }
                 currentReaderStyle = resolvedStyle
+                volumeKeysTurnPages = stylePreferences.volumeKeysTurnPages
+                animatePageTurns = stylePreferences.animatePageTurns
+                currentReaderTypeface = resolvedTypeface
                 applyReaderTheme(resolvedStyle)
                 val adapter = TextBlockAdapter(blockSource, renderer, resolvedStyle)
+                adapter.setCustomTypeface(resolvedTypeface)
                 currentDocumentSha256 = metadata?.sha256
                 syncReadingTimer()
                 textBlockAdapter = adapter
@@ -904,6 +1050,11 @@ class MainActivity : Activity() {
                     reader.addOnScrollListener(pinyinScrollListener)
                 }
                 val savedReadingAnchor = recent?.savedPosition
+                val restoredReadingAnchor = if (recent != null) {
+                    recent.restoredAnchorPosition?.let { restoredAnchor?.copy(position = it) }
+                } else {
+                    restoredAnchor
+                }
                 savedReadingAnchor?.let { position ->
                     Log.i(
                         POSITION_TAG,
@@ -911,21 +1062,21 @@ class MainActivity : Activity() {
                             "utf16=${position.utf16Offset}",
                     )
                 }
-                if (restoredAnchor != null || savedReadingAnchor != null || savedInstanceState != null) {
+                val requestedReaderAnchor = restoredReadingAnchor ?: savedReadingAnchor?.let { position ->
+                    ReaderAnchor(
+                        position = position.blockIndex,
+                        globalUtf16 = position.utf16Offset,
+                        screenY = reader.paddingTop + 1,
+                    )
+                }
+                retainedReaderAnchor = requestedReaderAnchor
+                if (requestedReaderAnchor != null || savedInstanceState != null) {
                     reader.post {
-                        when {
-                            restoredAnchor != null -> restoreReaderAnchor(restoredAnchor)
-                            savedReadingAnchor != null -> restoreReaderAnchor(
-                                ReaderAnchor(
-                                    position = savedReadingAnchor.blockIndex,
-                                    globalUtf16 = savedReadingAnchor.utf16Offset,
-                                    screenY = reader.paddingTop + 1,
-                                ),
-                            )
-                            else -> {
-                                val offset = if (reader.width == restoredWidth) restoredOffset else 0
-                                readerLayoutManager.scrollToPositionWithOffset(restoredPosition, offset)
-                            }
+                        if (requestedReaderAnchor != null) {
+                            restoreReaderAnchor(requestedReaderAnchor)
+                        } else {
+                            val offset = if (reader.width == restoredWidth) restoredOffset else 0
+                            readerLayoutManager.scrollToPositionWithOffset(restoredPosition, offset)
                         }
                     }
                 }
@@ -984,9 +1135,21 @@ class MainActivity : Activity() {
         setReaderChromeVisible(false, animate = true)
         if (::bookmarkButton.isInitialized) bookmarkButton.text = getString(R.string.bookmark_add_short)
         val page = (reader.height * 0.88f).toInt().coerceAtLeast(1)
+        reader.animate().cancel()
+        reader.alpha = 1f
+        reader.translationY = 0f
         reader.stopScroll()
+        retainedReaderAnchor = null
+        anchorRestoreGeneration++
         val distance = direction.coerceIn(-1, 1) * page
-        reader.post { reader.smoothScrollBy(0, distance) }
+        reader.scrollBy(0, distance)
+        if (animatePageTurns && ValueAnimator.areAnimatorsEnabled()) {
+            reader.alpha = 0.82f
+            reader.animate().alpha(1f).setDuration(PAGE_TURN_ANIMATION_MS).start()
+        }
+        reader.postOnAnimation { updateReadingProgress() }
+        reader.removeCallbacks(pagePositionSave)
+        reader.postDelayed(pagePositionSave, NAVIGATION_SETTLE_DELAY_MS)
         Log.i(NAVIGATION_TAG, "tap page direction=$direction pixels=$distance")
         return true
     }
@@ -1001,11 +1164,11 @@ class MainActivity : Activity() {
             readerChrome.visibility = if (visible) View.VISIBLE else View.GONE
         } else if (visible) {
             readerChrome.alpha = 0f
-            readerChrome.translationY = -8.dp.toFloat()
+            readerChrome.translationY = 8.dp.toFloat()
             readerChrome.visibility = View.VISIBLE
             readerChrome.animate().alpha(1f).translationY(0f).setDuration(READER_CHROME_ANIMATION_MS).start()
         } else {
-            readerChrome.animate().alpha(0f).translationY(-8.dp.toFloat())
+            readerChrome.animate().alpha(0f).translationY(8.dp.toFloat())
                 .setDuration(READER_CHROME_ANIMATION_MS)
                 .withEndAction {
                     if (!readerChromeVisible) readerChrome.visibility = View.GONE
@@ -1150,7 +1313,9 @@ class MainActivity : Activity() {
     }
 
     private fun inspectRestore(uri: Uri, displayName: String) {
-        beginBackupOperation(getString(R.string.restore_inspecting, displayName), isRestore = false)
+        // Freeze reading time and position from inspection through the preview decision.
+        // Otherwise the app's own timer can invalidate the preview before Restore is tapped.
+        beginBackupOperation(getString(R.string.restore_inspecting, displayName), isRestore = true)
         backupExecutor.execute {
             var temporary: File? = null
             val result = runCatching {
@@ -1332,12 +1497,17 @@ class MainActivity : Activity() {
     }.getOrElse { path.usableSpace }
 
     private fun showBookshelf() {
+        cancelDeepSeekChapter()
         if (bookshelfHome.visibility != View.VISIBLE) {
             persistReadingPosition()
             selectionGestureController?.cancelSelection()
         }
+        reader.animate().cancel()
+        reader.alpha = 1f
+        reader.translationY = 0f
         setReaderChromeVisible(false)
         reader.visibility = View.INVISIBLE
+        readerFooter.visibility = View.GONE
         bookshelfHome.visibility = View.VISIBLE
         syncReadingTimer()
         rootLayout.setBackgroundColor(Color.rgb(250, 248, 243))
@@ -1382,15 +1552,25 @@ class MainActivity : Activity() {
     private fun renderBookshelfHome(snapshot: BookshelfSnapshot) {
         bookshelfSnapshot = snapshot
         bookshelfStatusView.visibility = View.GONE
-        bookshelfEmptyView.visibility = if (snapshot.catalog.books.isEmpty()) View.VISIBLE else View.GONE
-        val labels = bookshelfLabels(snapshot)
+        renderBookshelfItems()
+    }
+
+    private fun renderBookshelfItems() {
+        val snapshot = bookshelfSnapshot ?: return
+        val sort = if (bookshelfSort.selectedItemPosition == 1) BookshelfSort.TITLE else BookshelfSort.RECENT
+        val displayedBooks = BookshelfList.visible(snapshot.catalog.books, bookshelfSearch.text.toString(), sort)
+        visibleBookshelfBooks = displayedBooks
+        bookshelfEmptyView.text = getString(
+            if (snapshot.catalog.books.isEmpty()) R.string.bookshelf_empty else R.string.bookshelf_no_results,
+        )
+        bookshelfEmptyView.visibility = if (displayedBooks.isEmpty()) View.VISIBLE else View.GONE
         bookshelfItems.adapter = object : ArrayAdapter<CharSequence>(
             this,
             android.R.layout.simple_list_item_1,
-            labels,
+            displayedBooks.map(BookCatalogEntry::displayName),
         ) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val book = snapshot.catalog.books[position]
+                val book = displayedBooks[position]
                 val row = LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
@@ -1399,12 +1579,36 @@ class MainActivity : Activity() {
                 row.addView(bookCoverView(book), LinearLayout.LayoutParams(64.dp, 88.dp).apply {
                     marginEnd = 12.dp
                 })
-                row.addView(TextView(context).apply {
-                    text = labels[position].toString().replace(Regex("^■ .  "), "")
-                    isSingleLine = false
-                    maxLines = 4
+                val title = if (book.bookId == snapshot.catalog.currentBookId) {
+                    getString(R.string.bookshelf_current, book.displayName)
+                } else {
+                    book.displayName
+                }
+                val details = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+                details.addView(TextView(context).apply {
+                    text = title
                     textSize = 16f
-                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                })
+                details.addView(TextView(context).apply {
+                    text = getString(R.string.bookshelf_details, book.encoding, book.byteCount)
+                    textSize = 12f
+                    maxLines = 2
+                })
+                details.addView(TextView(context).apply {
+                    val opened = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                        .format(Date(book.lastOpenedAtEpochMillis))
+                    val progress = snapshot.progressTenths[book.bookId]
+                    text = if (progress == null) {
+                        getString(R.string.bookshelf_recent, opened)
+                    } else {
+                        getString(R.string.bookshelf_recent_progress, opened, progress / 10.0)
+                    }
+                    textSize = 12f
+                    maxLines = 2
+                })
+                row.addView(details, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
                 return row
             }
         }
@@ -1448,6 +1652,7 @@ class MainActivity : Activity() {
         }
         bookshelfHome.visibility = View.GONE
         reader.visibility = View.VISIBLE
+        readerFooter.visibility = View.VISIBLE
         syncReadingTimer()
         rootLayout.setBackgroundColor(currentReaderStyle.resolvedBackgroundColor())
         applySystemBarAppearance(hasDarkReaderBackground(currentReaderStyle))
@@ -1670,7 +1875,10 @@ class MainActivity : Activity() {
                 if (isDestroyed) return@runOnUiThread
                 result.onSuccess {
                     Log.i(CATALOG_TAG, "opened book=${book.bookId}")
-                    startActivity(Intent(this, MainActivity::class.java).putExtra(EXTRA_OPEN_READER, true))
+                    startActivity(Intent(this, MainActivity::class.java)
+                        .putExtra(EXTRA_OPEN_READER, true)
+                        .putExtra(STATE_BOOKSHELF_QUERY, bookshelfSearch.text.toString())
+                        .putExtra(STATE_BOOKSHELF_SORT, bookshelfSort.selectedItemPosition))
                     finish()
                 }.onFailure { error ->
                     finishLibraryOperation()
@@ -2218,6 +2426,17 @@ class MainActivity : Activity() {
         val lineSpacing = SeekBar(this).apply { max = STYLE_LINE_MAX - STYLE_LINE_MIN }
         content.addView(fontLabel)
         content.addView(fontSize)
+        val chooseFont = Button(this).apply { text = "전체 책 폰트 파일 선택 (TTF·OTF)" }
+        val resetFont = Button(this).apply {
+            text = "기본 폰트로 돌아가기"
+            isEnabled = currentReaderTypeface != null
+        }
+        content.addView(chooseFont)
+        content.addView(resetFont)
+        val volumeButton = Button(this).apply { text = getString(R.string.reader_volume_button_settings) }
+        content.addView(volumeButton)
+        val pageTurnButton = Button(this).apply { text = getString(R.string.reader_page_turn_settings) }
+        content.addView(pageTurnButton)
         content.addView(spacingLabel)
         content.addView(lineSpacing)
 
@@ -2254,6 +2473,7 @@ class MainActivity : Activity() {
         content.addView(savedMeaningMarks)
         val preview = TextView(this).apply {
             text = getString(R.string.reader_style_preview_sample)
+            typeface = currentReaderTypeface ?: Typeface.DEFAULT
             setPadding(12.dp, 12.dp, 12.dp, 12.dp)
         }
         content.addView(preview)
@@ -2321,6 +2541,30 @@ class MainActivity : Activity() {
         if (bookId != null) scopeGroup.check(bookScope.id) else scopeGroup.check(defaultScope.id)
 
         lateinit var dialog: AlertDialog
+        chooseFont.setOnClickListener {
+            dialog.dismiss()
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }, REQUEST_OPEN_FONT)
+        }
+        resetFont.setOnClickListener {
+            dialog.dismiss()
+            blockExecutor.execute {
+                val result = runCatching { readerFontStore().clear() }
+                runOnUiThread { if (!isDestroyed) result.onSuccess { applyReaderTypeface(null) }
+                    .onFailure(::showStyleFailure) }
+            }
+        }
+        volumeButton.setOnClickListener {
+            dialog.dismiss()
+            showVolumeKeySettings()
+        }
+        pageTurnButton.setOnClickListener {
+            dialog.dismiss()
+            showPageTurnSettings()
+        }
         dialog = AlertDialog.Builder(this)
             .setTitle(R.string.reader_style)
             .setView(ScrollView(this).apply { addView(content) })
@@ -2354,6 +2598,64 @@ class MainActivity : Activity() {
             }
         }
         dialog.show()
+    }
+
+    private fun showVolumeKeySettings() {
+        var selected = if (volumeKeysTurnPages) 1 else 0
+        AlertDialog.Builder(this)
+            .setTitle(R.string.reader_volume_button_settings)
+            .setSingleChoiceItems(
+                arrayOf(getString(R.string.reader_volume_normal), getString(R.string.reader_volume_pages)),
+                selected,
+            ) { _, which -> selected = which }
+            .setPositiveButton(R.string.reader_style_save) { _, _ ->
+                val enabled = selected == 1
+                blockExecutor.execute {
+                    val result = runCatching {
+                        val latest = readerStyleStore().load() ?: ReaderStylePreferences()
+                        readerStyleStore().save(latest.copy(volumeKeysTurnPages = enabled))
+                        enabled
+                    }
+                    runOnUiThread {
+                        if (isDestroyed) return@runOnUiThread
+                        result.onSuccess { saved ->
+                            volumeKeysTurnPages = saved
+                            Toast.makeText(this, R.string.reader_volume_saved, Toast.LENGTH_SHORT).show()
+                        }.onFailure(::showStyleFailure)
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showPageTurnSettings() {
+        var selected = if (animatePageTurns) 1 else 0
+        AlertDialog.Builder(this)
+            .setTitle(R.string.reader_page_turn_settings)
+            .setSingleChoiceItems(
+                arrayOf(getString(R.string.reader_page_turn_instant), getString(R.string.reader_page_turn_animated)),
+                selected,
+            ) { _, which -> selected = which }
+            .setPositiveButton(R.string.reader_style_save) { _, _ ->
+                val enabled = selected == 1
+                blockExecutor.execute {
+                    val result = runCatching {
+                        val latest = readerStyleStore().load() ?: ReaderStylePreferences()
+                        readerStyleStore().save(latest.copy(animatePageTurns = enabled))
+                        enabled
+                    }
+                    runOnUiThread {
+                        if (isDestroyed) return@runOnUiThread
+                        result.onSuccess { saved ->
+                            animatePageTurns = saved
+                            Toast.makeText(this, R.string.reader_page_turn_saved, Toast.LENGTH_SHORT).show()
+                        }.onFailure(::showStyleFailure)
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun saveReaderStyle(
@@ -2398,6 +2700,28 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun readerFontStore(): ReaderFontStore = ReaderFontStore(File(filesDir, "reader-font"))
+
+    private fun importReaderFont(uri: Uri) {
+        blockExecutor.execute {
+            val result = runCatching {
+                val input = contentResolver.openInputStream(uri)
+                    ?: error("선택한 폰트 파일을 읽을 수 없습니다.")
+                readerFontStore().import(input)
+            }
+            runOnUiThread { if (!isDestroyed) result.onSuccess(::applyReaderTypeface)
+                .onFailure(::showStyleFailure) }
+        }
+    }
+
+    private fun applyReaderTypeface(typeface: Typeface?) {
+        val anchor = captureReaderAnchor()
+        currentReaderTypeface = typeface
+        textBlockAdapter?.setCustomTypeface(typeface)
+        restoreReaderAnchor(anchor)
+        if (pinyinMode != PinyinDisplayMode.ORIGINAL) reader.post { requestVisiblePinyin() }
+    }
+
     private fun applyReaderTheme(style: ReaderStyle) {
         val dark = hasDarkReaderBackground(style)
         val background = style.resolvedBackgroundColor()
@@ -2410,6 +2734,8 @@ class MainActivity : Activity() {
         selectionControls.setBackgroundColor(background)
         statusView.setTextColor(accent)
         readingProgressView.setTextColor(accent)
+        readerFooter.setTextColor(accent)
+        readerFooter.setBackgroundColor(background)
         applyControlTheme(readerChrome, text, Color.argb(238, Color.red(button), Color.green(button), Color.blue(button)))
         applyControlTheme(selectionControls, text, button)
         applySystemBarAppearance(dark && bookshelfHome.visibility != View.VISIBLE)
@@ -2462,6 +2788,10 @@ class MainActivity : Activity() {
             val bookId = pendingCoverBookId
             pendingCoverBookId = null
             if (resultCode == RESULT_OK && bookId != null) data?.data?.let { importBookCover(it, bookId) }
+            return
+        }
+        if (requestCode == REQUEST_OPEN_FONT) {
+            if (resultCode == RESULT_OK) data?.data?.let(::importReaderFont)
             return
         }
         if (requestCode == REQUEST_OPEN_FOLDER) {
@@ -2981,12 +3311,15 @@ class MainActivity : Activity() {
                 getString(R.string.vocabulary),
                 getString(R.string.backup_restore),
                 getString(R.string.reading_time),
+                getString(R.string.azure_usage_title),
             )
         } else {
             listOf(
                 getString(R.string.vocabulary),
                 getString(R.string.backup_restore),
                 getString(R.string.reading_time),
+                getString(R.string.azure_usage_title),
+                getString(R.string.deepseek_chapter_title),
                 getString(R.string.bookmark_here),
                 getString(R.string.annotations),
             )
@@ -2998,11 +3331,184 @@ class MainActivity : Activity() {
                     0 -> showVocabulary()
                     1 -> showBackupRestoreMenu()
                     2 -> showReadingTime()
-                    3 -> addBookmarkHere()
-                    4 -> showAnnotations()
+                    3 -> showAzureUsage()
+                    4 -> showDeepSeekChapter()
+                    5 -> addBookmarkHere()
+                    6 -> showAnnotations()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showDeepSeekChapter() {
+        val documentId = currentDocumentSha256 ?: return
+        val offset = captureReaderAnchor()?.globalUtf16 ?: return
+        val length = documentUtf16Length
+        val adapter = textBlockAdapter ?: return
+        val generation = ++chapterTranslationGeneration
+        blockExecutor.execute {
+            val bounds = runCatching {
+                val epub = epubPublicationStore().load(documentId)
+                val chapters = if (epub != null) epub.chapters.map { it.title to it.utf16Offset }
+                else openChapterTranslationIndex(documentId).use { index ->
+                    AutomaticChapterDetector.detect((0 until index.blockCount).asSequence().map(index::blockAt))
+                        .map { it.title to it.utf16Offset }
+                }
+                ChapterTranslationRangeSelector.select(
+                    chapters, offset, length, DeepSeekChapterTranslator.MAX_CHAPTER_UTF16,
+                )
+            }
+            runOnUiThread {
+                if (isDestroyed || generation != chapterTranslationGeneration || currentDocumentSha256 != documentId) return@runOnUiThread
+                bounds.onSuccess { range ->
+                    adapter.readRange(range.startUtf16, range.endUtf16) { text ->
+                        if (isDestroyed || generation != chapterTranslationGeneration || currentDocumentSha256 != documentId) return@readRange
+                        text.onSuccess { showDeepSeekChapterConfirmation(range.title, it) }
+                            .onFailure(::showDeepSeekChapterFailure)
+                    }
+                }.onFailure(::showDeepSeekChapterFailure)
+            }
+        }
+    }
+
+    private fun openChapterTranslationIndex(documentId: String): StreamingTextIndex.Reader {
+        val directory = File(cacheDir, TEXT_INDEX_DIRECTORY)
+        val indexFile = File(directory, "$documentId.index")
+        val dataFile = File(directory, "$documentId.blocks")
+        if (!indexFile.isFile || !dataFile.isFile) {
+            val metadata = metadataStore().load()
+                ?.takeIf { it.sha256 == documentId }
+                ?: throw IllegalStateException("현재 책의 원본 정보를 찾지 못해 회차를 읽을 수 없습니다.")
+            val stored = resolveStoredImport(metadata.storedName)
+            val inspected = TxtImporter.inspectStored(stored, expectedEncoding = metadata.encoding)
+            check(inspected.sha256 == documentId && inspected.byteCount == metadata.byteCount) {
+                "보존된 원본이 현재 책과 일치하지 않아 회차를 읽지 않았습니다."
+            }
+            StreamingTextIndex.build(
+                original = stored,
+                destinationDirectory = directory,
+                contentId = documentId,
+                encoding = metadata.encoding,
+                maxBlockUtf16 = MAX_BLOCK_UTF16,
+            )
+        }
+        return StreamingTextIndex.Reader(indexFile, dataFile)
+    }
+
+    private fun showDeepSeekChapterConfirmation(title: String, source: String) {
+        val keyInput = EditText(this).apply {
+            hint = getString(R.string.deepseek_key_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        }
+        val keyDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.deepseek_chapter_title)
+            .setMessage(R.string.deepseek_key_message)
+            .setView(keyInput)
+            .setPositiveButton(R.string.deepseek_key_next, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        keyDialog.setOnShowListener {
+            keyDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val key = keyInput.text.toString().trim()
+                if (key.isEmpty()) {
+                    keyInput.error = getString(R.string.deepseek_key_hint)
+                    return@setOnClickListener
+                }
+                keyInput.setText("")
+                keyDialog.dismiss()
+                showDeepSeekSendConfirmation(title, source, key)
+            }
+        }
+        keyDialog.show()
+    }
+
+    private fun showDeepSeekSendConfirmation(title: String, source: String, key: String) {
+        val summary = TextView(this).apply {
+            text = getString(
+                R.string.deepseek_chapter_confirm,
+                title,
+                source.length,
+                source.trim().take(40),
+                source.trim().takeLast(40),
+            )
+            textSize = 14f
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(20.dp, 8.dp, 20.dp, 8.dp)
+            addView(summary)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.deepseek_chapter_title)
+            .setView(ScrollView(this).apply { addView(content) })
+            .setPositiveButton(R.string.deepseek_chapter_send) { _, _ -> requestDeepSeekChapter(title, source, key) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun requestDeepSeekChapter(title: String, source: String, key: String) {
+        cancelDeepSeekChapter()
+        val generation = ++chapterTranslationGeneration
+        val documentId = currentDocumentSha256
+        val translator = DeepSeekChapterTranslator()
+        activeChapterTranslator = translator
+        chapterTranslationDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.deepseek_chapter_title)
+            .setMessage(R.string.deepseek_chapter_progress)
+            .setNegativeButton(R.string.translation_cancel) { _, _ -> cancelDeepSeekChapter() }
+            .setOnCancelListener { cancelDeepSeekChapter() }
+            .show()
+        dictionaryExecutor.execute {
+            if (generation != chapterTranslationGeneration) return@execute
+            val result = runCatching { translator.translate(key, source) }
+            runOnUiThread {
+                if (isDestroyed || generation != chapterTranslationGeneration || currentDocumentSha256 != documentId) return@runOnUiThread
+                chapterTranslationDialog?.dismiss()
+                chapterTranslationDialog = null
+                activeChapterTranslator = null
+                result.onSuccess { showDeepSeekChapterResult(title, it) }
+                    .onFailure(::showDeepSeekChapterFailure)
+            }
+        }
+    }
+
+    private fun cancelDeepSeekChapter() {
+        chapterTranslationGeneration++
+        activeChapterTranslator?.cancel()
+        activeChapterTranslator = null
+        chapterTranslationDialog?.dismiss()
+        chapterTranslationDialog = null
+    }
+
+    private fun showDeepSeekChapterResult(title: String, result: DeepSeekChapterTranslator.Result) {
+        val content = StringBuilder()
+        result.sections.forEachIndexed { index, section ->
+            content.append(index + 1).append(" · 원문\n")
+                .append(section.source.trim()).append("\n\n한국어 · AI 번역\n")
+                .append(section.translation).append("\n\n")
+        }
+        val peakEstimate = (result.inputTokens * 0.30 + result.outputTokens * 1.20) / 1_000_000.0
+        content.append(getString(R.string.deepseek_chapter_usage, result.inputTokens, result.outputTokens, peakEstimate))
+        val text = TextView(this).apply {
+            this.text = content.toString()
+            textSize = 16f
+            setTextIsSelectable(true)
+            setPadding(20.dp, 12.dp, 20.dp, 12.dp)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(ScrollView(this).apply { addView(text) })
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    private fun showDeepSeekChapterFailure(error: Throwable) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.deepseek_chapter_title)
+            .setMessage(error.message ?: getString(R.string.unknown_error))
+            .setPositiveButton(android.R.string.ok, null)
             .show()
     }
 
@@ -3344,7 +3850,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (isDestroyed || !selectionRequestGate.isCurrent(target.selectionVersion)) return@runOnUiThread
                 result.onSuccess { meanings ->
-                    if (meanings.isEmpty()) startOnlineTranslation(target)
+                    if (meanings.isEmpty()) showNoSavedMeanings(target)
                     else showMeaningDialog(target, meanings)
                 }.onFailure(::showMeaningFailure)
             }
@@ -3377,6 +3883,16 @@ class MainActivity : Activity() {
             meanings.getOrNull(which)?.let { editUserMeaning(it, target) }
         }
         builder.show()
+    }
+
+    private fun showNoSavedMeanings(target: MeaningTarget) {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.meaning_title, target.sourceText))
+            .setMessage(R.string.meaning_none)
+            .setPositiveButton(R.string.azure_translation) { _, _ -> startOnlineTranslation(target) }
+            .setNeutralButton(R.string.meaning_add) { _, _ -> showAddMeaning(target) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun showDictionaryResult(target: MeaningTarget, response: DictionaryLookupResponse) {
@@ -3588,7 +4104,51 @@ class MainActivity : Activity() {
         target: MeaningTarget,
         credentials: AzureTranslatorCredentials,
     ) {
-        requestOnlineTranslation(target, AzureTranslationProvider(credentials), isAzure = true)
+        val provider = AzureTranslationProvider(credentials, recordUsage = { characters ->
+            runCatching { azureUsageStore().record(credentials, characters.toLong(), System.currentTimeMillis()) }
+                .onFailure { error ->
+                    Log.e(MEANING_TAG, "Azure usage record failed; translation result retained", error)
+                    runOnUiThread {
+                        if (!isDestroyed) Toast.makeText(this, R.string.azure_usage_save_failed, Toast.LENGTH_LONG).show()
+                    }
+                }
+        })
+        requestOnlineTranslation(target, provider, isAzure = true)
+    }
+
+    private fun azureUsageStore(): AzureUsageStore = AzureUsageStore(File(filesDir, "azure-usage"))
+
+    private fun showAzureUsage() {
+        blockExecutor.execute {
+            val result = runCatching {
+                val credentials = AzureTranslatorCredentialStore(applicationContext).load()
+                credentials?.let { azureUsageStore().summary(it, System.currentTimeMillis()) }
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                val message = result.fold(
+                    onSuccess = { summary ->
+                        if (summary == null) getString(R.string.azure_usage_no_key)
+                        else if (summary.firstRecordedAt == null) getString(R.string.azure_usage_empty)
+                        else getString(
+                            R.string.azure_usage_summary,
+                            summary.month.toString(),
+                            java.text.NumberFormat.getIntegerInstance().format(summary.characters),
+                            java.text.NumberFormat.getIntegerInstance().format(summary.f0MaximumRemaining),
+                            java.time.Instant.ofEpochMilli(summary.firstRecordedAt)
+                                .atZone(java.time.ZoneOffset.UTC).toLocalDate().toString(),
+                        )
+                    },
+                    onFailure = { getString(R.string.azure_usage_load_failed) },
+                )
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.azure_usage_title)
+                    .setMessage(message)
+                    .setPositiveButton(R.string.azure_usage_open_portal) { _, _ -> openWebPage(AZURE_PORTAL_URL) }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            }
+        }
     }
 
     private fun requestOnlineTranslation(
@@ -3910,9 +4470,20 @@ class MainActivity : Activity() {
     }
 
     private fun updateReadingProgressLabel(progress: Int) {
-        val percent = progress.coerceIn(0, ReadingProgress.MAX) / 10.0
+        readerFooterProgress = progress.coerceIn(0, ReadingProgress.MAX)
+        val percent = readerFooterProgress / 10.0
         readingProgressView.text = getString(R.string.reading_progress, percent)
         readingProgressSeekBar.contentDescription = getString(R.string.reading_progress_description, percent)
+        updateReaderFooter()
+    }
+
+    private fun updateReaderFooter() {
+        if (!::readerFooter.isInitialized) return
+        val percent = readerFooterProgress / 10.0
+        val label = batteryPercent?.let { battery ->
+            getString(R.string.reader_footer_with_battery, percent, battery)
+        } ?: getString(R.string.reader_footer_progress_only, percent)
+        if (readerFooter.text != label) readerFooter.text = label
     }
 
     private fun navigateToUtf16(targetUtf16: Int, returnAnchor: ReaderAnchor, screenY: Int) {
@@ -3997,6 +4568,9 @@ class MainActivity : Activity() {
     }
 
     private fun persistReadingPosition() {
+        // The reader is initialized behind the bookshelf on startup. Its temporary first
+        // visible item is not a reading position and must not replace the saved anchor.
+        if (!::bookshelfHome.isInitialized || bookshelfHome.visibility == View.VISIBLE) return
         val position = captureReadingPosition() ?: return
         positionExecutor.execute {
             runCatching { readingPositionStore().save(position) }
@@ -4011,7 +4585,10 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun captureReaderAnchor(): ReaderAnchor? {
+    private fun captureReaderAnchor(): ReaderAnchor? =
+        retainedReaderAnchor ?: captureVisibleReaderAnchor()
+
+    private fun captureVisibleReaderAnchor(): ReaderAnchor? {
         if (!::readerLayoutManager.isInitialized) return null
         val position = readerLayoutManager.findFirstVisibleItemPosition()
         if (position == RecyclerView.NO_POSITION) return null
@@ -4033,6 +4610,9 @@ class MainActivity : Activity() {
 
     private fun restoreReaderAnchor(anchor: ReaderAnchor?) {
         if (anchor == null) return
+        // Reflow can place the requested character in the middle of a new line. Keep its
+        // original offset for progress and persistence until the reader actually moves.
+        retainedReaderAnchor = anchor
         val generation = ++anchorRestoreGeneration
         restoreReaderAnchor(anchor, generation, remainingPasses = 2, remainingAttempts = 6)
         reader.postDelayed(
@@ -4084,7 +4664,7 @@ class MainActivity : Activity() {
                 )
             } else if (BuildConfig.DEBUG) {
                 reader.postOnAnimation {
-                    val actual = captureReaderAnchor()
+                    val actual = captureVisibleReaderAnchor()
                     val actualView = actual?.let {
                         readerLayoutManager.findViewByPosition(it.position) as? TextView
                     }
@@ -4171,6 +4751,8 @@ class MainActivity : Activity() {
         outState.putBoolean(STATE_READER_CHROME_VISIBLE, readerChromeVisible)
         pendingCoverBookId?.let { outState.putString(STATE_PENDING_COVER_BOOK_ID, it) }
         outState.putBoolean(STATE_BOOKSHELF_VISIBLE, bookshelfHome.visibility == View.VISIBLE)
+        outState.putString(STATE_BOOKSHELF_QUERY, bookshelfSearch.text.toString())
+        outState.putInt(STATE_BOOKSHELF_SORT, bookshelfSort.selectedItemPosition)
         if (::reader.isInitialized && ::readerLayoutManager.isInitialized) {
             val position = readerLayoutManager.findFirstVisibleItemPosition()
             if (position != RecyclerView.NO_POSITION) {
@@ -4346,8 +4928,28 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        if (::reader.isInitialized) reader.removeCallbacks(pagePositionSave)
         if (!restoreInProgress) persistReadingPosition()
         super.onStop()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val direction = when (event.keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP -> -1
+            KeyEvent.KEYCODE_VOLUME_DOWN -> 1
+            else -> return super.dispatchKeyEvent(event)
+        }
+        if (!volumeKeysTurnPages || !::reader.isInitialized || !reader.isShown ||
+            !::bookshelfHome.isInitialized || bookshelfHome.visibility == View.VISIBLE
+        ) return super.dispatchKeyEvent(event)
+        return when (event.action) {
+            KeyEvent.ACTION_DOWN -> {
+                if (event.repeatCount == 0) pageReader(direction)
+                true
+            }
+            KeyEvent.ACTION_UP -> true
+            else -> super.dispatchKeyEvent(event)
+        }
     }
 
     @SuppressLint("GestureBackNavigation") // API 33+ uses OnBackInvokedCallback above.
@@ -4361,8 +4963,11 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        cancelDeepSeekChapter()
+        if (::reader.isInitialized) reader.removeCallbacks(pagePositionSave)
         readingTimeHandler.removeCallbacks(readingTimeTick)
         if (screenReceiverRegistered) unregisterReceiver(screenReceiver)
+        if (batteryReceiverRegistered) unregisterReceiver(batteryReceiver)
         if (Build.VERSION.SDK_INT >= 33) {
             readerBackCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
             readerBackCallback = null
@@ -4431,6 +5036,7 @@ class MainActivity : Activity() {
     private companion object {
         const val READING_TIME_TICK_MS = 15_000L
         const val READER_CHROME_ANIMATION_MS = 110L
+        const val PAGE_TURN_ANIMATION_MS = 140L
         const val MAX_BLOCK_UTF16 = 768
         const val MAX_TRANSLATION_SELECTION_UTF16 = AzureTranslationProvider.MAX_REQUEST_CHARACTERS * 2
         const val REQUEST_OPEN_TXT = 1001
@@ -4439,12 +5045,15 @@ class MainActivity : Activity() {
         const val REQUEST_OPEN_FOLDER = 1004
         const val REQUEST_OPEN_EPUB = 1005
         const val REQUEST_OPEN_COVER = 1006
+        const val REQUEST_OPEN_FONT = 1007
         const val MAX_COVER_BYTES = 10L * 1024L * 1024L
         const val MAX_COVER_DIMENSION = 10_000
         const val STATE_FIRST_VISIBLE_POSITION = "reader.firstVisiblePosition"
         const val STATE_READER_CHROME_VISIBLE = "reader.chromeVisible"
         const val STATE_PENDING_COVER_BOOK_ID = "bookshelf.pendingCoverBookId"
         const val STATE_BOOKSHELF_VISIBLE = "bookshelf.visible"
+        const val STATE_BOOKSHELF_QUERY = "bookshelf.query"
+        const val STATE_BOOKSHELF_SORT = "bookshelf.sort"
         const val STATE_FIRST_VISIBLE_OFFSET = "reader.firstVisibleOffset"
         const val STATE_READER_WIDTH = "reader.width"
         const val STATE_READER_ANCHOR_UTF16 = "reader.anchorUtf16"
@@ -4494,6 +5103,7 @@ class MainActivity : Activity() {
         const val MYMEMORY_CONSENT = "mymemory_consent"
         const val MYMEMORY_URL = "https://mymemory.translated.net/"
         const val AZURE_TRANSLATOR_URL = "https://azure.microsoft.com/products/ai-services/ai-translator/"
+        const val AZURE_PORTAL_URL = "https://portal.azure.com/"
         val SELECTION_DELAYS = setOf(250, 350, 450)
         val STORED_NAME = Regex("[0-9a-f]{64}\\.original")
     }
@@ -4510,6 +5120,7 @@ class MainActivity : Activity() {
         val initialBlocks: Map<Int, TextBlock>,
         val utf16Length: Int,
         val savedPosition: ReadingPosition?,
+        val restoredAnchorPosition: Int?,
     )
 
     private data class BookshelfSnapshot(

@@ -12,12 +12,22 @@ object TextBlocker {
         val boundaries = BreakIterator.getCharacterInstance(Locale.ROOT).apply { setText(text) }
         var blockStart = 0
         var lastBoundary = blockStart
+        var lastParagraphBoundary = 0
+        var lastSentenceBoundary = 0
         var boundary = boundaries.next()
 
         while (boundary != BreakIterator.DONE) {
             if (boundary - blockStart > maxUtf16Length && lastBoundary > blockStart) {
-                blocks += text.block(blocks.size, blockStart, lastBoundary)
-                blockStart = lastBoundary
+                val preferredFrom = blockStart + maxUtf16Length / 2
+                val split = lastParagraphBoundary.takeIf { it > blockStart && it >= preferredFrom }
+                    ?: lastSentenceBoundary.takeIf { it > blockStart && it >= preferredFrom }
+                    ?: lastBoundary
+                blocks += text.block(blocks.size, blockStart, split)
+                blockStart = split
+                lastBoundary = split
+                lastParagraphBoundary = 0
+                lastSentenceBoundary = 0
+                boundary = boundaries.following(split)
                 continue
             }
             lastBoundary = boundary
@@ -25,6 +35,13 @@ object TextBlocker {
                 blocks += text.block(blocks.size, blockStart, boundary)
                 blockStart = boundary
                 lastBoundary = boundary
+                lastParagraphBoundary = 0
+                lastSentenceBoundary = 0
+            } else {
+                when (text[boundary - 1]) {
+                    '\n', '\r' -> lastParagraphBoundary = boundary
+                    '。', '！', '？', '.', '!', '?' -> lastSentenceBoundary = boundary
+                }
             }
             boundary = boundaries.next()
         }

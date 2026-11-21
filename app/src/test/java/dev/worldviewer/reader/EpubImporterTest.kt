@@ -33,6 +33,29 @@ class EpubImporterTest {
         assertEquals("UTF-8", imported.text.encoding)
     }
 
+    @Test
+    fun followsSpineWhenManifestOrderDiffers() {
+        val root = Files.createTempDirectory("worldviewer-epub-spine").toFile()
+        val reversedSpine = opf.replace(
+            "<spine><itemref idref=\"one\"/><itemref idref=\"two\"/></spine>",
+            "<spine><itemref idref=\"two\"/><itemref idref=\"one\"/></spine>",
+        )
+        val bytes = epub(
+            "mimetype" to "application/epub+zip",
+            "META-INF/container.xml" to container,
+            "OPS/book.opf" to reversedSpine,
+            "OPS/text/one.xhtml" to xhtml("第一章", "你好。"),
+            "OPS/text/two.xhtml" to xhtml("第二章", "再见。"),
+        )
+
+        val imported = EpubImporter.import(
+            ByteArrayInputStream(bytes), root.resolve("imports"), root.resolve("sources"),
+        )
+
+        assertEquals(listOf("第二章", "第一章"), imported.chapters.map(EpubChapter::title))
+        assertEquals("第二章\n再见。\n\n第一章\n你好。", imported.text.storedFile.readText())
+    }
+
     @Test(expected = TxtImportException::class)
     fun rejectsEncryptedPublication() {
         val root = Files.createTempDirectory("worldviewer-epub-drm").toFile()

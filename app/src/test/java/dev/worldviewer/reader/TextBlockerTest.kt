@@ -37,6 +37,22 @@ class TextBlockerTest {
     }
 
     @Test
+    fun `long paragraphs prefer a sentence ending over an arbitrary cutoff`() {
+        val source = "甲".repeat(10) + "。" + "乙".repeat(10) + "。"
+        val blocks = TextBlocker.split(source, maxUtf16Length = 16)
+
+        assertEquals(listOf("甲".repeat(10) + "。", "乙".repeat(10) + "。"), blocks.map { it.text })
+        assertEquals(source, blocks.joinToString("") { it.text })
+    }
+
+    @Test
+    fun `a paragraph break takes priority and a single unbroken paragraph remains bounded`() {
+        val paragraphs = "甲".repeat(10) + "\n" + "乙".repeat(10)
+        assertEquals("甲".repeat(10) + "\n", TextBlocker.split(paragraphs, 16).first().text)
+        assertEquals(listOf(16, 16, 8), TextBlocker.split("甲".repeat(40), 16).map { it.text.length })
+    }
+
+    @Test
     fun `empty text has no blocks and invalid limit is rejected`() {
         assertEquals(emptyList<TextBlock>(), TextBlocker.split("", 8))
         assertThrows(IllegalArgumentException::class.java) { TextBlocker.split("text", 0) }

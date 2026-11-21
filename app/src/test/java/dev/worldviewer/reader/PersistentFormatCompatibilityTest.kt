@@ -159,7 +159,7 @@ class PersistentFormatCompatibilityTest {
                 "독서 스타일 정보",
                 0x57565354,
                 styleDirectory.resolve(ReaderStyleStore.FILE_NAME),
-                version = 3,
+                version = 5,
             ) { ReaderStyleStore(styleDirectory).load() },
             PersistentFile(
                 "수동 목차 정보",

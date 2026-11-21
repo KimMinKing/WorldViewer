@@ -31,7 +31,8 @@ class ReaderStyleStoreTest {
         val bookStyle = ReaderStyle(24, 150, ReaderTheme.LIGHT,
             textColorArgb = 0xFFFFFFFF.toInt(), backgroundColorArgb = 0xFF102838.toInt(),
             showSavedMeaningMarks = false)
-        val preferences = ReaderStylePreferences(defaultStyle, mapOf(bookA to bookStyle))
+        val preferences = ReaderStylePreferences(defaultStyle, mapOf(bookA to bookStyle),
+            volumeKeysTurnPages = true, animatePageTurns = true)
 
         store.save(preferences)
 
@@ -67,9 +68,70 @@ class ReaderStyleStoreTest {
         store.save(requireNotNull(legacy))
         DataInputStream(file.inputStream()).use { input ->
             assertEquals(0x57565354, input.readInt())
-            assertEquals(3, input.readInt())
+            assertEquals(5, input.readInt())
         }
         assertEquals(legacy, store.load())
+    }
+
+    @Test
+    fun `version three settings keep volume keys disabled until explicitly enabled`() {
+        val directory = Files.createTempDirectory("worldviewer-style-v3").toFile()
+        val file = directory.resolve(ReaderStyleStore.FILE_NAME)
+        DataOutputStream(file.outputStream()).use { output ->
+            output.writeInt(0x57565354)
+            output.writeInt(3)
+            output.writeInt(19)
+            output.writeInt(115)
+            output.writeUTF("LIGHT")
+            output.writeInt(0)
+            output.writeInt(0)
+            output.writeBoolean(true)
+            output.writeInt(0)
+        }
+        val before = file.readBytes()
+        val store = ReaderStyleStore(directory)
+
+        assertFalse(requireNotNull(store.load()).volumeKeysTurnPages)
+        assertTrue(before.contentEquals(file.readBytes()))
+
+        store.save(requireNotNull(store.load()).copy(volumeKeysTurnPages = true))
+        assertTrue(requireNotNull(store.load()).volumeKeysTurnPages)
+        DataInputStream(file.inputStream()).use { input ->
+            assertEquals(0x57565354, input.readInt())
+            assertEquals(5, input.readInt())
+        }
+    }
+
+    @Test
+    fun `version four setting loads without animation and upgrades only after save`() {
+        val directory = Files.createTempDirectory("worldviewer-style-v4").toFile()
+        val file = directory.resolve(ReaderStyleStore.FILE_NAME)
+        DataOutputStream(file.outputStream()).use { output ->
+            output.writeInt(0x57565354)
+            output.writeInt(4)
+            output.writeInt(19)
+            output.writeInt(115)
+            output.writeUTF("LIGHT")
+            output.writeInt(0)
+            output.writeInt(0)
+            output.writeBoolean(true)
+            output.writeInt(0)
+            output.writeBoolean(true)
+        }
+        val before = file.readBytes()
+        val store = ReaderStyleStore(directory)
+        val existing = requireNotNull(store.load())
+
+        assertTrue(existing.volumeKeysTurnPages)
+        assertFalse(existing.animatePageTurns)
+        assertTrue(before.contentEquals(file.readBytes()))
+
+        store.save(existing.copy(animatePageTurns = true))
+        assertTrue(requireNotNull(store.load()).animatePageTurns)
+        DataInputStream(file.inputStream()).use { input ->
+            assertEquals(0x57565354, input.readInt())
+            assertEquals(5, input.readInt())
+        }
     }
 
     @Test

@@ -14,6 +14,7 @@
     <string name="bookshelf_reset_cover">기본 표지로 되돌리기</string>
     <string name="bookshelf_custom_cover">%1$s 사용자 표지</string>
     <string name="bookshelf_add_folder">폴더의 TXT 가져오기</string>
+    <string name="bookshelf_more">더보기</string>
     <string name="bookshelf_folder_scan_title">폴더 TXT 확인</string>
     <string name="bookshelf_folder_scanning">선택한 폴더와 하위 폴더의 TXT를 확인하는 중입니다.</string>
     <string name="bookshelf_folder_scanned">TXT %1$d개 확인 중…</string>
@@ -23,9 +24,19 @@
     <string name="bookshelf_folder_skip">이 파일 건너뛰기</string>
     <string name="bookshelf_folder_done">추가 %1$d개 · 중복 %2$d개 · 실패/건너뜀 %3$d개</string>
     <string name="bookshelf_folder_cancelled">가져오기를 취소했습니다. 이미 추가한 책은 보존됩니다.</string>
-    <string name="bookshelf_empty">책장에 추가한 TXT가 없습니다.</string>
+    <string name="bookshelf_empty">책장에 추가한 책이 없습니다.</string>
+    <string name="bookshelf_no_results">제목이 일치하는 책이 없습니다.</string>
+    <string name="bookshelf_search_hint">책 제목 검색</string>
+    <string name="bookshelf_sort_description">책장 정렬</string>
+    <string-array name="bookshelf_sort_options">
+        <item>최근 읽은 순</item>
+        <item>제목 순</item>
+    </string-array>
     <string name="bookshelf_current">현재 · %1$s</string>
     <string name="bookshelf_item">%1$s\n%2$s · %3$d바이트\n최근 활동 %4$s%5$s</string>
+    <string name="bookshelf_details">%1$s · %2$d바이트</string>
+    <string name="bookshelf_recent">최근 활동 %1$s</string>
+    <string name="bookshelf_recent_progress">최근 활동 %1$s · %2$.1f%%</string>
     <string name="bookshelf_progress_suffix">&#160;· %1$.1f%%</string>
     <string name="bookshelf_open">열기</string>
     <string name="bookshelf_remove">목록에서 제거</string>
@@ -64,6 +75,14 @@
     </string-array>
     <string name="reader_style_saved">독서 스타일을 저장했습니다.</string>
     <string name="reader_style_failed">독서 스타일 저장 실패</string>
+    <string name="reader_volume_button_settings">음량 버튼 동작 (모든 책)</string>
+    <string name="reader_volume_normal">휴대폰 음량 조절</string>
+    <string name="reader_volume_pages">페이지 넘기기 · 올림: 이전, 내림: 다음</string>
+    <string name="reader_volume_saved">음량 버튼 동작을 저장했습니다.</string>
+    <string name="reader_page_turn_settings">화면 넘김 효과 (모든 책)</string>
+    <string name="reader_page_turn_instant">즉시 전환</string>
+    <string name="reader_page_turn_animated">짧게 부드럽게 나타남</string>
+    <string name="reader_page_turn_saved">화면 넘김 효과를 저장했습니다.</string>
     <string name="table_of_contents">목차</string>
     <string name="table_of_contents_description">자동으로 찾은 장 제목 목록</string>
     <string name="table_of_contents_automatic">자동 목차</string>
@@ -103,6 +122,7 @@
     <string name="search_failed">검색 실패: %1$s</string>
     <string name="meaning_title">“%1$s” 뜻</string>
     <string name="meaning_add">뜻 추가</string>
+    <string name="meaning_none">저장된 뜻이 없습니다. 직접 뜻을 추가하거나 필요할 때 Azure 번역을 요청할 수 있습니다.</string>
     <string name="meaning_hint">직접 뜻풀이 입력</string>
     <string name="meaning_save">저장</string>
     <string name="meaning_saved">사용자 뜻을 저장했습니다.</string>
@@ -144,10 +164,25 @@
     <string name="azure_translation_notice">선택한 원문을 Azure로 보낸 온라인 자동 번역이며, 앱은 결과를 자동 저장하지 않습니다.</string>
     <string name="azure_translation_progress">선택한 중국어를 Microsoft Azure Translator에서 번역하는 중입니다.</string>
     <string name="azure_translation_failed_message">네트워크 연결, Key1, 위치/지역 또는 Azure F0 월 한도를 확인하세요. 저장한 사용자 뜻과 독서는 계속 사용할 수 있습니다.\n\n%1$s</string>
+    <string name="azure_usage_title">Azure 번역 사용량</string>
+    <string name="azure_usage_summary">%1$s (UTC) 현재 Key1로 이 앱에서 기록한 번역: %2$s자\nF0 월 200만 자에서 이 기록만 뺀 값: %3$s자\n기록 시작: %4$s\n\n이 값은 실제 남은 한도가 아닙니다. 기록 기능 추가 전, 다른 기기·앱, 같은 Azure 리소스의 다른 사용량은 포함되지 않습니다. Azure 포털에서 Translator 리소스 → 메트릭 → Text Characters Translated의 이번 달 합계를 확인하세요.</string>
+    <string name="azure_usage_no_key">이 앱에 Azure Key1이 설정되지 않았습니다. Azure 포털에서 Translator 리소스 → 메트릭 → Text Characters Translated의 이번 달 합계를 확인하세요.</string>
+    <string name="azure_usage_empty">현재 Key1의 이 앱 사용량 기록이 아직 없습니다. 이전 사용량은 알 수 없으므로 남은 한도를 계산하지 않습니다. Azure 포털에서 Translator 리소스 → 메트릭 → Text Characters Translated의 이번 달 합계를 확인하세요.</string>
+    <string name="azure_usage_open_portal">Azure 포털 열기</string>
+    <string name="azure_usage_load_failed">이 앱의 Azure 사용량 기록을 읽지 못했습니다. 기존 기록은 보존했습니다. 정확한 사용량은 Azure 포털에서 확인하세요.</string>
+    <string name="azure_usage_save_failed">Azure 번역은 완료됐지만 이 앱의 사용량 기록을 저장하지 못했습니다.</string>
     <string name="vocabulary">내 단어장</string>
     <string name="vocabulary_empty">직접 저장한 뜻이 없습니다.</string>
     <string name="vocabulary_item">%1$s · %2$s\n%3$s</string>
     <string name="reader_tools">도구</string>
+    <string name="deepseek_chapter_title">현재 회차 AI 번역 (DeepSeek)</string>
+    <string name="deepseek_key_hint">DeepSeek API 키 (이번 실행에만 사용)</string>
+    <string name="deepseek_key_message">API 키를 입력하면 다음 화면에서 전송할 회차를 확인할 수 있습니다. 키는 앱에 저장하지 않습니다.</string>
+    <string name="deepseek_key_next">회차 확인</string>
+    <string name="deepseek_chapter_confirm">%1$s · 원문 %2$d자를 DeepSeek로 전송합니다.\n처음: %3$s\n끝: %4$s\n\n입력·출력 각각 1만 토큰인 예시는 약 $0.0075~$0.015이며 실제 요금은 다릅니다. 원문과 번역을 구간별로 대조하며 앱에 저장하지 않습니다. 취소해도 이미 전송된 요청은 과금될 수 있습니다.</string>
+    <string name="deepseek_chapter_send">전송하고 번역</string>
+    <string name="deepseek_chapter_progress">현재 회차를 번역하고 있습니다. 잠시 기다려 주세요.</string>
+    <string name="deepseek_chapter_usage">DeepSeek 사용량: 입력 %1$d토큰 · 출력 %2$d토큰. 혼잡 시간 단가로 계산한 참고액 약 $%3$.4f (실제 청구와 다를 수 있음). 결과는 저장되지 않습니다.</string>
     <string name="reading_time">독서 기록</string>
     <string name="reading_time_loading">독서 기록을 불러오는 중입니다.</string>
     <string name="reading_time_load_failed">독서 기록을 읽지 못했습니다. 기존 기록은 보존했습니다.</string>
@@ -229,6 +264,8 @@
     <string name="reading_progress">%1$.1f%%</string>
     <string name="reading_progress_control">읽기 위치 이동</string>
     <string name="reading_progress_description">읽기 진행률 %1$.1f퍼센트</string>
+    <string name="reader_footer_with_battery">읽음 %1$.1f%%  ·  배터리 %2$d%%</string>
+    <string name="reader_footer_progress_only">읽음 %1$.1f%%</string>
     <string name="previous_location">이전 위치</string>
     <string name="previous_location_description">마지막 위치 이동 전으로 돌아가기</string>
     <string name="encoding_preview_title">%1$s 인코딩과 미리보기 선택</string>

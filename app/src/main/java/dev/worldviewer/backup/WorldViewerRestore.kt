@@ -5,10 +5,12 @@ import dev.worldviewer.reader.ImportMetadataStore
 import dev.worldviewer.reader.ManualChapterStore
 import dev.worldviewer.reader.EpubPublicationStore
 import dev.worldviewer.reader.ReaderStyleStore
+import dev.worldviewer.reader.ReaderFontStore
 import dev.worldviewer.reader.ReadingPositionStore
 import dev.worldviewer.reader.ReadingTimeStore
 import dev.worldviewer.reader.UserAnnotationStore
 import dev.worldviewer.reader.UserMeaningStore
+import dev.worldviewer.lookup.AzureUsageStore
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
@@ -299,8 +301,17 @@ class WorldViewerRestore(
                     }
                     BackupCategory.READER_STYLE ->
                         checkNotNull(ReaderStyleStore(File(staging, "reader-styles")).load())
+                    BackupCategory.READER_FONT -> {
+                        val font = File(staging, "reader-font/${ReaderFontStore.FILE_NAME}")
+                        if (font.length() !in 12..ReaderFontStore.MAX_BYTES ||
+                            !ReaderFontStore.hasSupportedHeader(font)) {
+                            throw BackupFormatException("폰트 백업 항목이 올바르지 않습니다.")
+                        }
+                    }
                     BackupCategory.READING_TIME ->
                         checkNotNull(ReadingTimeStore(File(staging, "reading-time")).load())
+                    BackupCategory.AZURE_USAGE ->
+                        check(AzureUsageStore(File(staging, "azure-usage")).validate())
                     BackupCategory.MANUAL_CHAPTER -> {
                         val document = entry.relativePath.substringAfter('/').substringBefore('.')
                         ManualChapterStore(File(staging, "manual-chapters")).load(document)

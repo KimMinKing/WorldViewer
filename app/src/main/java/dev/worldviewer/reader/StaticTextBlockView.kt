@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Typeface
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
@@ -52,6 +53,14 @@ class StaticTextBlockView(context: Context) : View(context) {
             style.fontSizeSp.toFloat(),
             resources.displayMetrics,
         )
+        textLayout = null
+        requestLayout()
+        invalidate()
+    }
+
+    fun setCustomTypeface(typeface: Typeface?) {
+        if (textPaint.typeface === typeface) return
+        textPaint.typeface = typeface
         textLayout = null
         requestLayout()
         invalidate()

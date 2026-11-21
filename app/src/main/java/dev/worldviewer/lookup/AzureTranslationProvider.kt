@@ -19,13 +19,16 @@ fun interface AzureTranslationTransport {
         sourceText: String,
         credentials: AzureTranslatorCredentials,
         cancellation: LookupCancellation,
-    ): String
+    ): AzureTranslationResult
 }
+
+data class AzureTranslationResult(val text: String, val meteredCharacters: Int)
 
 /** Direct Chinese-to-Korean translation using the user's Azure Translator F0 resource. */
 class AzureTranslationProvider(
     private val credentials: AzureTranslatorCredentials,
     private val transport: AzureTranslationTransport = AzureHttpTranslationTransport,
+    private val recordUsage: (Int) -> Unit = {},
 ) : DictionaryLookupProvider {
     override fun lookup(
         request: DictionaryLookupRequest,
@@ -36,7 +39,9 @@ class AzureTranslationProvider(
         require(codePoints <= MAX_REQUEST_CHARACTERS) {
             "Azure 온라인 번역은 한 번에 50,000자까지 지원합니다."
         }
-        val translated = transport.translate(request.sourceText, credentials, cancellation).trim()
+        val result = transport.translate(request.sourceText, credentials, cancellation)
+        recordUsage(result.meteredCharacters)
+        val translated = result.text.trim()
         cancellation.throwIfCancelled()
         return DictionaryLookupResponse(
             providerId = "azure-translator-f0",
@@ -73,7 +78,7 @@ private object AzureHttpTranslationTransport : AzureTranslationTransport {
         sourceText: String,
         credentials: AzureTranslatorCredentials,
         cancellation: LookupCancellation,
-    ): String {
+    ): AzureTranslationResult {
         val connection = URL(TRANSLATE_URL).openConnection() as HttpURLConnection
         return try {
             connection.connectTimeout = TIMEOUT_MILLIS
@@ -100,7 +105,9 @@ private object AzureHttpTranslationTransport : AzureTranslationTransport {
             val translations = JSONArray(response)
                 .getJSONObject(0)
                 .getJSONArray("translations")
-            translations.getJSONObject(0).getString("text")
+            val translated = translations.getJSONObject(0).getString("text")
+            val metered = meteredCharacters(sourceText, connection.getHeaderField("X-metered-usage"))
+            AzureTranslationResult(translated, metered)
         } finally {
             connection.disconnect()
         }
@@ -126,5 +133,8 @@ private object AzureHttpTranslationTransport : AzureTranslationTransport {
         return bytes.toString(StandardCharsets.UTF_8.name())
     }
 }
+
+internal fun meteredCharacters(sourceText: String, header: String?): Int =
+    header?.toIntOrNull()?.takeIf { it in 0..sourceText.length * 2 } ?: sourceText.length
 
 class AzureTranslationException(message: String, val httpStatus: Int? = null) : RuntimeException(message)

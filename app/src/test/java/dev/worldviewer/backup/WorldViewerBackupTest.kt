@@ -21,6 +21,24 @@ import java.util.zip.ZipOutputStream
 
 class WorldViewerBackupTest {
     @Test
+    fun `selected reading font is retained in manual backup without originals`() {
+        val root = temporary.newFolder("font-backup")
+        val fontBytes = byteArrayOf(0, 1, 0, 0) + ByteArray(12)
+        java.io.File(root, "reader-font/reading.font").apply {
+            parentFile!!.mkdirs()
+            writeBytes(fontBytes)
+        }
+
+        val archive = temporary.newFile("font.wvb")
+        val preview = WorldViewerBackup(root).create(archive, false, 4)
+
+        assertTrue(preview.entries.any {
+            it.category == BackupCategory.READER_FONT && it.relativePath == "reader-font/reading.font"
+        })
+        assertEquals(preview, WorldViewerBackup(root).inspect(archive))
+    }
+
+    @Test
     fun `EPUB source is included only with originals and publication metadata is retained`() {
         val root = temporary.newFolder("epub-backup")
         val sourceBytes = "epub-source".toByteArray()

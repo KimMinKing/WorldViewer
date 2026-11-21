@@ -29,6 +29,8 @@ enum class BackupCategory {
     EPUB_SOURCE,
     EPUB_PUBLICATION,
     BOOK_COVER,
+    READER_FONT,
+    AZURE_USAGE,
 }
 
 data class BackupEntry(
@@ -176,7 +178,9 @@ class WorldViewerBackup(
             addExact("imports/current.meta", BackupCategory.IMPORT_METADATA)
             addExact("library/books.catalog", BackupCategory.BOOK_CATALOG)
             addExact("reader-styles/reader-styles.bin", BackupCategory.READER_STYLE)
+            addExact("reader-font/reading.font", BackupCategory.READER_FONT)
             addExact("reading-time/reading-time.bin", BackupCategory.READING_TIME)
+            addExact("azure-usage/azure-usage.bin", BackupCategory.AZURE_USAGE)
             addExact("user-meanings/user-meanings.dat", BackupCategory.USER_MEANING)
             addExact("user-annotations/user-annotations.dat", BackupCategory.USER_ANNOTATION)
             addMatching("reading-positions", POSITION_FILE, BackupCategory.READING_POSITION)
@@ -293,7 +297,9 @@ class WorldViewerBackup(
         path == "imports/current.meta" -> BackupCategory.IMPORT_METADATA
         path == "library/books.catalog" -> BackupCategory.BOOK_CATALOG
         path == "reader-styles/reader-styles.bin" -> BackupCategory.READER_STYLE
+        path == "reader-font/reading.font" -> BackupCategory.READER_FONT
         path == "reading-time/reading-time.bin" -> BackupCategory.READING_TIME
+        path == "azure-usage/azure-usage.bin" -> BackupCategory.AZURE_USAGE
         path == "user-meanings/user-meanings.dat" -> BackupCategory.USER_MEANING
         path == "user-annotations/user-annotations.dat" -> BackupCategory.USER_ANNOTATION
         path.startsWith("imports/") && ORIGINAL_FILE.matches(path.substringAfter('/')) ->

@@ -119,18 +119,25 @@ object StreamingTextIndex {
 
     private fun safeBoundary(text: StringBuilder, maximum: Int): Int {
         val sample = text.toString()
-        val boundary = BreakIterator.getCharacterInstance(Locale.ROOT).apply { setText(sample) }
-            .preceding(maximum + 1)
-        if (boundary > 0) return boundary
-        return if (
-            maximum in 1 until sample.length &&
-            Character.isHighSurrogate(sample[maximum - 1]) &&
-            Character.isLowSurrogate(sample[maximum])
-        ) {
-            maximum - 1
-        } else {
-            maximum
+        val boundaries = BreakIterator.getCharacterInstance(Locale.ROOT).apply { setText(sample) }
+        val hardBoundary = boundaries.preceding(maximum + 1)
+        if (hardBoundary <= 0) return boundaries.following(0)
+        val preferredFrom = maximum / 2
+        var paragraphBoundary = 0
+        var sentenceBoundary = 0
+        var boundary = boundaries.first()
+        while (boundary != BreakIterator.DONE && boundary <= hardBoundary) {
+            if (boundary >= preferredFrom && boundary > 0) {
+                when (sample[boundary - 1]) {
+                    '\n', '\r' -> paragraphBoundary = boundary
+                    '。', '！', '？', '.', '!', '?' -> sentenceBoundary = boundary
+                }
+            }
+            boundary = boundaries.next()
         }
+        return paragraphBoundary.takeIf { it > 0 }
+            ?: sentenceBoundary.takeIf { it > 0 }
+            ?: hardBoundary
     }
 
     private fun replace(source: File, target: File) {

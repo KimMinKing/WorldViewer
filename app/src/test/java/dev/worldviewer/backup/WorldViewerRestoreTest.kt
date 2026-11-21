@@ -1,5 +1,7 @@
 package dev.worldviewer.backup
 
+import dev.worldviewer.lookup.AzureTranslatorCredentials
+import dev.worldviewer.lookup.AzureUsageStore
 import dev.worldviewer.reader.AnnotationType
 import dev.worldviewer.reader.BookCatalog
 import dev.worldviewer.reader.BookCatalogEntry
@@ -10,6 +12,8 @@ import dev.worldviewer.reader.ImportedText
 import dev.worldviewer.reader.MeaningScope
 import dev.worldviewer.reader.ReadingPosition
 import dev.worldviewer.reader.ReadingPositionStore
+import dev.worldviewer.reader.ReaderStylePreferences
+import dev.worldviewer.reader.ReaderStyleStore
 import dev.worldviewer.reader.ReadingTimeKey
 import dev.worldviewer.reader.ReadingTimeStore
 import dev.worldviewer.reader.UserAnnotation
@@ -29,6 +33,70 @@ import java.security.MessageDigest
 class WorldViewerRestoreTest {
     @get:Rule
     val temporary = TemporaryFolder()
+
+    @Test
+    fun `Azure usage record survives backup restore and conflict policy`() {
+        val source = temporary.newFolder("azure-source")
+        val credentials = AzureTranslatorCredentials("backup-key", "koreacentral")
+        val at = 1_760_000_000_000L
+        AzureUsageStore(File(source, "azure-usage")).record(credentials, 123, at)
+        val archive = temporary.newFile("azure-usage.wvb")
+        val preview = WorldViewerBackup(source).create(archive, false, at)
+        assertTrue(preview.entries.any { it.category == BackupCategory.AZURE_USAGE })
+        val target = temporary.newFolder("azure-target")
+        val restored = AzureUsageStore(File(target, "azure-usage"))
+        val restore = WorldViewerRestore(target)
+        restore.restore(archive, RestoreConflictPolicy.KEEP_EXISTING)
+        assertEquals(123L, restored.summary(credentials, at).characters)
+        restored.record(credentials, 5, at)
+        restore.restore(archive, RestoreConflictPolicy.KEEP_EXISTING)
+        assertEquals(128L, restored.summary(credentials, at).characters)
+        restore.restore(archive, RestoreConflictPolicy.REPLACE_EXISTING)
+        assertEquals(123L, restored.summary(credentials, at).characters)
+    }
+
+    @Test
+    fun `reading controls survive backup restore and respect existing settings`() {
+        val source = temporary.newFolder("volume-source")
+        val sourceSettings = ReaderStylePreferences(volumeKeysTurnPages = true, animatePageTurns = true)
+        ReaderStyleStore(File(source, "reader-styles")).save(sourceSettings)
+        val archive = temporary.newFile("volume-restore.wvb")
+        WorldViewerBackup(source).create(archive, includeOriginalTexts = false, createdAtEpochMillis = 1)
+        val target = temporary.newFolder("volume-target")
+        val targetStore = ReaderStyleStore(File(target, "reader-styles"))
+        targetStore.save(ReaderStylePreferences())
+        val restore = WorldViewerRestore(target)
+
+        restore.restore(archive, RestoreConflictPolicy.KEEP_EXISTING)
+        assertEquals(false, targetStore.load()?.volumeKeysTurnPages)
+        assertEquals(false, targetStore.load()?.animatePageTurns)
+        restore.restore(archive, RestoreConflictPolicy.REPLACE_EXISTING)
+        assertEquals(sourceSettings, targetStore.load())
+    }
+
+    @Test
+    fun `reading font survives backup restore and respects conflicts`() {
+        val source = temporary.newFolder("font-source")
+        val sourceFont = File(source, "reader-font/reading.font").apply {
+            parentFile!!.mkdirs()
+            writeBytes(byteArrayOf(0, 1, 0, 0) + ByteArray(12) { 1 })
+        }
+        val archive = temporary.newFile("font-restore.wvb")
+        WorldViewerBackup(source).create(archive, includeOriginalTexts = false, createdAtEpochMillis = 1)
+        val target = temporary.newFolder("font-target")
+        val restoredFont = File(target, "reader-font/reading.font")
+        val restore = WorldViewerRestore(target)
+
+        restore.restore(archive, RestoreConflictPolicy.KEEP_EXISTING)
+        assertArrayEquals(sourceFont.readBytes(), restoredFont.readBytes())
+
+        val changed = byteArrayOf(0, 1, 0, 0) + ByteArray(12) { 2 }
+        restoredFont.writeBytes(changed)
+        restore.restore(archive, RestoreConflictPolicy.KEEP_EXISTING)
+        assertArrayEquals(changed, restoredFont.readBytes())
+        restore.restore(archive, RestoreConflictPolicy.REPLACE_EXISTING)
+        assertArrayEquals(sourceFont.readBytes(), restoredFont.readBytes())
+    }
 
     @Test
     fun `reading time survives backup restore and conflicts keep current data`() {

@@ -2,10 +2,12 @@ package dev.worldviewer.reader
 
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.graphics.Typeface
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.Layout
 import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
 import android.text.style.LineHeightSpan
 import android.view.View
 import android.view.ViewGroup
@@ -32,6 +34,7 @@ class TextBlockAdapter(
     private var pinyinMode = PinyinDisplayMode.ORIGINAL
     private var pinyinByPosition: Map<Int, List<PinyinReading>> = emptyMap()
     private val pinyinOverrides = mutableMapOf<Int, String>()
+    private var customTypeface: Typeface? = null
 
     init {
         setHasStableIds(true)
@@ -45,6 +48,7 @@ class TextBlockAdapter(
             return BlockViewHolder(
                 StaticTextBlockView(parent.context).apply {
                     setReaderStyle(readerStyle)
+                    setCustomTypeface(customTypeface)
                     layoutParams = RecyclerView.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -58,6 +62,7 @@ class TextBlockAdapter(
         val bottom = (10 * density).toInt()
         val textView = PinyinTextView(parent.context).apply {
             applyReaderStyle(readerStyle, density)
+            typeface = customTypeface ?: Typeface.DEFAULT
             includeFontPadding = true
             breakStrategy = Layout.BREAK_STRATEGY_SIMPLE
             hyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NONE
@@ -72,6 +77,7 @@ class TextBlockAdapter(
 
     override fun onBindViewHolder(holder: BlockViewHolder, position: Int) {
         holder.applyReaderStyle(readerStyle)
+        holder.applyTypeface(customTypeface)
         val block = blockSource.cachedBlock(position)
         if (block == null) {
             holder.bindLoading()
@@ -193,6 +199,12 @@ class TextBlockAdapter(
         notifyItemRangeChanged(0, itemCount, STYLE_PAYLOAD)
     }
 
+    fun setCustomTypeface(typeface: Typeface?) {
+        if (customTypeface === typeface) return
+        customTypeface = typeface
+        notifyItemRangeChanged(0, itemCount, STYLE_PAYLOAD)
+    }
+
     fun setCompletedPinyinSelection(range: SelectionRange?) {
         if (completedPinyinSelection == range) return
         completedPinyinSelection = range
@@ -256,6 +268,12 @@ class TextBlockAdapter(
     class BlockViewHolder(
         itemView: View,
     ) : RecyclerView.ViewHolder(itemView) {
+        fun applyTypeface(typeface: Typeface?) {
+            when (val view = itemView) {
+                is TextView -> view.typeface = typeface ?: Typeface.DEFAULT
+                is StaticTextBlockView -> view.setCustomTypeface(typeface)
+            }
+        }
         fun applyReaderStyle(style: ReaderStyle) {
             when (val view = itemView) {
                 is PinyinTextView -> view.applyReaderStyle(style, view.resources.displayMetrics.density)
@@ -320,10 +338,9 @@ class TextBlockAdapter(
                 if (meaningRange.endUtf16 > startUtf16 && meaningRange.startUtf16 < endUtf16) {
                     val localStart = (meaningRange.startUtf16 - startUtf16).coerceAtLeast(0)
                     val localEnd = (meaningRange.endUtf16 - startUtf16).coerceAtMost(text.length)
-                    if (meaningRange.label == null) {
-                        setSpan(BackgroundColorSpan(readerStyle.savedMeaningColor()), localStart, localEnd,
-                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    } else if (meaningReservePx > 0 && meaningRange.startUtf16 in startUtf16 until endUtf16) {
+                    setSpan(ForegroundColorSpan(readerStyle.savedMeaningColor()), localStart, localEnd,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    if (meaningRange.label != null && meaningReservePx > 0 && meaningRange.startUtf16 in startUtf16 until endUtf16) {
                         val anchorEnd = (localStart + Character.charCount(text.codePointAt(localStart)))
                             .coerceAtMost(text.length)
                         setSpan(MeaningLineHeightSpan(baseDescentPx, meaningReservePx), localStart, anchorEnd,
@@ -396,10 +413,16 @@ internal fun ReaderStyle.highlightColor(): Int = readableHighlight(when (theme) 
     ReaderTheme.DARK -> Color.rgb(112, 91, 28)
 })
 
-internal fun ReaderStyle.savedMeaningColor(): Int = readableHighlight(when (theme) {
-    ReaderTheme.LIGHT -> Color.rgb(220, 238, 232)
-    ReaderTheme.DARK -> Color.rgb(42, 72, 65)
-})
+internal fun ReaderStyle.savedMeaningColor(): Int {
+    val deepGreen = Color.rgb(33, 105, 86)
+    val paleGreen = Color.rgb(145, 216, 189)
+    val background = resolvedBackgroundColor()
+    val preferred = if (theme == ReaderTheme.LIGHT) deepGreen else paleGreen
+    val alternate = if (theme == ReaderTheme.LIGHT) paleGreen else deepGreen
+    return listOf(preferred, alternate, resolvedTextColor())
+        .firstOrNull { ReaderStyleColors.contrast(it, background) >= 4.5 }
+        ?: resolvedTextColor()
+}
 
 private fun ReaderStyle.readableHighlight(preferred: Int): Int {
     if (ReaderStyleColors.contrast(resolvedTextColor(), preferred) >= 4.5) return preferred

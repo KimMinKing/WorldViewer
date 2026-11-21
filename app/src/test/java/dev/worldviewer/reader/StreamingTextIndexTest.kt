@@ -74,6 +74,22 @@ class StreamingTextIndexTest {
     }
 
     @Test
+    fun `streamed blocks prefer sentence boundaries and preserve global offsets`() {
+        val directory = Files.createTempDirectory("worldviewer-index-sentences").toFile()
+        val source = "甲".repeat(10) + "。" + "乙".repeat(10) + "。"
+        val original = directory.resolve("original").apply { writeText(source) }
+        val summary = StreamingTextIndex.build(original, directory.resolve("cache"), contentId, "UTF-8", 16)
+
+        StreamingTextIndex.Reader(summary.indexFile, summary.dataFile).use { reader ->
+            val blocks = (0 until reader.blockCount).map(reader::blockAt)
+            assertEquals(listOf("甲".repeat(10) + "。", "乙".repeat(10) + "。"), blocks.map { it.text })
+            assertEquals(11, blocks[1].startUtf16)
+            assertEquals(1, reader.positionForUtf16(11))
+            assertEquals(source, blocks.joinToString("") { it.text })
+        }
+    }
+
+    @Test
     fun `ten mebibyte source stays in bounded blocks`() {
         val directory = Files.createTempDirectory("worldviewer-index").toFile()
         val original = directory.resolve("original")

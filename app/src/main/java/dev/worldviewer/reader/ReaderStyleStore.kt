@@ -67,6 +67,8 @@ fun ReaderStyle.hasReadableContrast(): Boolean =
 data class ReaderStylePreferences(
     val defaultStyle: ReaderStyle = ReaderStyle.DEFAULT,
     val bookStyles: Map<String, ReaderStyle> = emptyMap(),
+    val volumeKeysTurnPages: Boolean = false,
+    val animatePageTurns: Boolean = false,
 ) {
     fun resolved(bookId: String?): ReaderStyle = bookId?.let(bookStyles::get) ?: defaultStyle
 }
@@ -86,7 +88,12 @@ class ReaderStyleStore(private val directory: File) {
             if (entries.map(Pair<String, ReaderStyle>::first).toSet().size != entries.size) {
                 throw TxtImportException("책별 스타일에 중복 식별자가 있습니다.")
             }
-            val preferences = ReaderStylePreferences(defaultStyle, entries.toMap()).also(::validate)
+            val preferences = ReaderStylePreferences(
+                defaultStyle = defaultStyle,
+                bookStyles = entries.toMap(),
+                volumeKeysTurnPages = if (version >= 4) input.readBoolean() else false,
+                animatePageTurns = if (version >= 5) input.readBoolean() else false,
+            ).also(::validate)
             input.requirePersistentRecordEnd("독서 스타일 정보")
             preferences
         }
@@ -164,6 +171,8 @@ class ReaderStyleStore(private val directory: File) {
             output.writeUTF(bookId)
             output.writeStyle(style)
         }
+        output.writeBoolean(preferences.volumeKeysTurnPages)
+        output.writeBoolean(preferences.animatePageTurns)
     }
 
     private fun DataInputStream.readStyle(version: Int): ReaderStyle = ReaderStyle(
@@ -212,7 +221,7 @@ class ReaderStyleStore(private val directory: File) {
     companion object {
         const val FILE_NAME = "reader-styles.bin"
         private const val MAGIC = 0x57565354
-        private const val VERSION = 3
+        private const val VERSION = 5
         private const val MAX_BOOKS = 10_000
         private val SHA256 = Regex("[0-9a-f]{64}")
     }
